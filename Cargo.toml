@@ -1,0 +1,28 @@
+[package]
+name = "vimputti"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "vimputti_shim"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "vimputti-manager"
+path = "src/main.rs"
+
+[dependencies]
+ctor = "0.5"
+libc = "0.2"
+libloading = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+nix = "0.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.47", features = ["full"] }
+ulid = "1.2"
+lazy_static = "1.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+backtrace = "0.3"
