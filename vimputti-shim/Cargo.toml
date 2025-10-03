@@ -1,0 +1,17 @@
+[package]
+name = "vimputti-shim"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "vimputti_shim"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
+lazy_static = "1.5"
+libloading = "0.8"
+ctor = "0.5"

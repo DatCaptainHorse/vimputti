@@ -1,28 +1,47 @@
+[workspace]
+members = ["vimputti-manager", "vimputti-shim"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1.47", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+libc = "0.2"
+ulid = "1.2"
+anyhow = "1.0"
+
 [package]
 name = "vimputti"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-name = "vimputti_shim"
-crate-type = ["cdylib"]
-path = "src/lib.rs"
-
-[[bin]]
-name = "vimputti-manager"
-path = "src/main.rs"
-
 [dependencies]
-ctor = "0.5"
-libc = "0.2"
-libloading = "0.8"
-clap = { version = "4.5", features = ["derive"] }
-nix = "0.30"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.47", features = ["full"] }
-ulid = "1.2"
-lazy_static = "1.5"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-backtrace = "0.3"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+anyhow = { workspace = true }
+libc = { workspace = true }
+
+[[example]]
+name = "simple_controller"
+path = "examples/simple_controller.rs"
+
+[[example]]
+name = "test_udev"
+path = "examples/test_udev.rs"
+
+[[example]]
+name = "controller_templates"
+path = "examples/controller_templates.rs"
+
+[[example]]
+name = "create_test_device"
+path = "examples/create_test_device.rs"
+
+[lib]
+name = "vimputti"
+path = "src/lib.rs"
