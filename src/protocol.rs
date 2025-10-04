@@ -133,6 +133,30 @@ impl Button {
             Button::Custom(code) => code,
         }
     }
+
+    /// Create a button from a zero-based index (for bitmasking)
+    pub fn from_index(index: u8) -> Self {
+        match index {
+            0 => Button::A,
+            1 => Button::B,
+            2 => Button::X,
+            3 => Button::Y,
+            4 => Button::LeftBumper,
+            5 => Button::RightBumper,
+            6 => Button::LeftTrigger,
+            7 => Button::RightTrigger,
+            8 => Button::Select,
+            9 => Button::Start,
+            10 => Button::LeftStick,
+            11 => Button::RightStick,
+            12 => Button::DPadUp,
+            13 => Button::DPadDown,
+            14 => Button::DPadLeft,
+            15 => Button::DPadRight,
+            16 => Button::Guide,
+            _ => Button::Custom(0x100 + index as u16), // Custom buttons start at code 0x100
+        }
+    }
 }
 
 /// Controller axis

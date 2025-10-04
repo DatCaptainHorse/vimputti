@@ -68,6 +68,15 @@ impl VirtualController {
         self.button(button, false);
     }
 
+    /// Set multiple buttons state as i32 bitmask
+    pub fn buttons(&self, buttons: i32) {
+        for i in 0..32 {
+            let button = Button::from_index(i);
+            let pressed = (buttons & (1 << i)) != 0;
+            self.button(button, pressed);
+        }
+    }
+
     /// Move an axis to a specific value
     pub fn axis(&self, axis: Axis, value: i32) {
         self.batch_manager
