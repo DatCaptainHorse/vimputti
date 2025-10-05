@@ -11,7 +11,7 @@ use tracing::debug;
 /// Handle to a virtual input device
 ///
 /// This struct provides a high-level API for sending input events to a virtual device.
-/// Events are automatically batched and flushed after a configurable timeout (default 100µs)
+/// Events are automatically batched and flushed after a configurable timeout
 /// or when explicitly flushed.
 ///
 /// The device is automatically destroyed when this handle is dropped.
@@ -46,8 +46,6 @@ impl VirtualController {
     }
 
     /// Set the auto-flush timeout for batched events
-    ///
-    /// Default is 100 microseconds
     pub fn set_batch_timeout(&mut self, timeout: Duration) {
         self.batch_manager.set_timeout(timeout);
     }
@@ -68,9 +66,10 @@ impl VirtualController {
         self.button(button, false);
     }
 
-    /// Set multiple buttons state as i32 bitmask
-    pub fn buttons(&self, buttons: i32) {
-        for i in 0..32 {
+    /// Convenience method to set multiple buttons state as i32 bitmask
+    /// The `count` parameter specifies how many buttons to consider from the bitmask.
+    pub fn buttons(&self, buttons: i32, count: u8) {
+        for i in 0..count {
             let button = Button::from_index(i);
             let pressed = (buttons & (1 << i)) != 0;
             self.button(button, pressed);
@@ -95,7 +94,7 @@ impl VirtualController {
     /// Manually flush all pending events immediately
     ///
     /// Events are automatically flushed after the batch timeout,
-    /// but this method allows immediate flushing for latency-critical scenarios.
+    /// however this method allows immediate flushing for specific needs.
     pub async fn flush(&self) -> Result<()> {
         self.batch_manager.flush().await
     }
