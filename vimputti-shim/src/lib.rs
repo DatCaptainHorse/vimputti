@@ -4,6 +4,7 @@ use lazy_static::lazy_static;
 use libc::{c_char, c_int, c_uint};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_long;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -33,6 +34,17 @@ struct OriginalFunctions {
     close: Option<unsafe extern "C" fn(c_int) -> c_int>,
     fopen: Option<unsafe extern "C" fn(*const c_char, *const c_char) -> *mut libc::FILE>,
     fopen64: Option<unsafe extern "C" fn(*const c_char, *const c_char) -> *mut libc::FILE>,
+    opendir: Option<unsafe extern "C" fn(*const c_char) -> *mut libc::DIR>,
+    scandir: Option<
+        unsafe extern "C" fn(
+            *const c_char,
+            *mut *mut *mut libc::dirent,
+            Option<unsafe extern "C" fn(*const libc::dirent) -> c_int>,
+            Option<
+                unsafe extern "C" fn(*mut *const libc::dirent, *mut *const libc::dirent) -> c_int,
+            >,
+        ) -> c_int,
+    >,
 }
 
 impl OriginalFunctions {
@@ -51,6 +63,8 @@ impl OriginalFunctions {
                 close: Self::get_original("close"),
                 fopen: Self::get_original("fopen"),
                 fopen64: Self::get_original("fopen64"),
+                opendir: Self::get_original("opendir"),
+                scandir: Self::get_original("scandir"),
             }
         }
     }
@@ -475,7 +489,6 @@ pub unsafe extern "C" fn fopen64(pathname: *const c_char, mode: *const c_char) -
             }
             return result;
         }
-
         return std::ptr::null_mut();
     }
 
@@ -484,4 +497,118 @@ pub unsafe extern "C" fn fopen64(pathname: *const c_char, mode: *const c_char) -
         return unsafe { orig_fopen64(pathname, mode) };
     }
     std::ptr::null_mut()
+}
+
+/// Intercept opendir() to fake /dev/input directory
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut libc::DIR {
+    if name.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let path_str = match unsafe { CStr::from_ptr(name).to_str() } {
+        Ok(s) => s,
+        Err(_) => {
+            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+            if let Some(orig_opendir) = orig.opendir {
+                return unsafe { orig_opendir(name) };
+            }
+            return std::ptr::null_mut();
+        }
+    };
+
+    // Redirect /dev/input to our devices directory
+    if path_str == "/dev/input" {
+        let redirected = PATH_REDIRECTOR
+            .redirect("/dev/input/event0")
+            .map(|p| {
+                // Extract base path (remove the event0 part)
+                PathBuf::from(p).parent().unwrap().to_path_buf()
+            })
+            .unwrap_or_else(|| PathBuf::from("/dev/input"));
+
+        debug!("opendir: /dev/input -> {}", redirected.display());
+        let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
+        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+        if let Some(orig_opendir) = orig.opendir {
+            return unsafe { orig_opendir(new_path.as_ptr()) };
+        }
+        return std::ptr::null_mut();
+    }
+
+    // Check for other redirections
+    if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
+        debug!("opendir: {} -> {}", path_str, redirected);
+        let new_path = CString::new(redirected).unwrap();
+        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+        if let Some(orig_opendir) = orig.opendir {
+            return unsafe { orig_opendir(new_path.as_ptr()) };
+        }
+        return std::ptr::null_mut();
+    }
+
+    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+    if let Some(orig_opendir) = orig.opendir {
+        return unsafe { orig_opendir(name) };
+    }
+    std::ptr::null_mut()
+}
+
+/// Intercept scandir() for directory enumeration
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scandir(
+    dirp: *const c_char,
+    namelist: *mut *mut *mut libc::dirent,
+    filter: Option<unsafe extern "C" fn(*const libc::dirent) -> c_int>,
+    compar: Option<
+        unsafe extern "C" fn(*mut *const libc::dirent, *mut *const libc::dirent) -> c_int,
+    >,
+) -> c_int {
+    if dirp.is_null() {
+        return -1;
+    }
+
+    let path_str = match unsafe { CStr::from_ptr(dirp).to_str() } {
+        Ok(s) => s,
+        Err(_) => {
+            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+            if let Some(orig_scandir) = orig.scandir {
+                return unsafe { orig_scandir(dirp, namelist, filter, compar) };
+            }
+            return -1;
+        }
+    };
+
+    // Redirect /dev/input
+    if path_str == "/dev/input" {
+        let redirected = PATH_REDIRECTOR
+            .redirect("/dev/input/event0")
+            .map(|p| PathBuf::from(p).parent().unwrap().to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/dev/input"));
+
+        debug!("scandir: /dev/input -> {}", redirected.display());
+        let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
+        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+        if let Some(orig_scandir) = orig.scandir {
+            return unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
+        }
+        return -1;
+    }
+
+    // Check for other redirections
+    if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
+        debug!("scandir: {} -> {}", path_str, redirected);
+        let new_path = CString::new(redirected).unwrap();
+        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+        if let Some(orig_scandir) = orig.scandir {
+            return unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
+        }
+        return -1;
+    }
+
+    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
+    if let Some(orig_scandir) = orig.scandir {
+        return unsafe { orig_scandir(dirp, namelist, filter, compar) };
+    }
+    -1
 }

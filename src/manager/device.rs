@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct VirtualDevice {
     pub id: DeviceId,
@@ -13,6 +13,7 @@ pub struct VirtualDevice {
     pub event_node: String, // e.g., "event0"
     socket_path: PathBuf,
     base_path: PathBuf,
+    dev_input_symlink: Option<PathBuf>, // symlink in /dev/input
     clients: Arc<Mutex<Vec<UnixStream>>>,
 }
 
@@ -43,14 +44,41 @@ impl VirtualDevice {
             Self::accept_clients(listener, clients_clone).await;
         });
 
+        // Try to create symlink in /dev/input
+        let dev_input_symlink = Self::try_create_dev_symlink(&event_node, &socket_path);
+
         Ok(Self {
             id,
             config,
             event_node,
             socket_path,
             base_path: base_path.to_path_buf(),
+            dev_input_symlink,
             clients,
         })
+    }
+
+    /// Try to create a symlink in /dev/input pointing to our socket
+    fn try_create_dev_symlink(event_node: &str, socket_path: &Path) -> Option<PathBuf> {
+        let symlink_path = PathBuf::from("/dev/input").join(event_node);
+
+        match std::os::unix::fs::symlink(socket_path, &symlink_path) {
+            Ok(_) => {
+                info!(
+                    "Created symlink: {} -> {}",
+                    symlink_path.display(),
+                    socket_path.display()
+                );
+                Some(symlink_path)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to create symlink in /dev/input (this is OK, using shim fallback): {}",
+                    e
+                );
+                None
+            }
+        }
     }
 
     /// Accept client connections to device socket
@@ -136,6 +164,12 @@ impl Drop for VirtualDevice {
     fn drop(&mut self) {
         // Clean up socket file
         let _ = std::fs::remove_file(&self.socket_path);
+
+        // Clean up symlink if it exists
+        if let Some(symlink) = &self.dev_input_symlink {
+            let _ = std::fs::remove_file(symlink);
+            info!("Removed symlink: {}", symlink.display());
+        }
 
         // Clean up sysfs files
         let _ = SysfsGenerator::remove_device_files(self.id, &self.base_path);
