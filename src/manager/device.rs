@@ -10,11 +10,13 @@ use tracing::{error, info, warn};
 pub struct VirtualDevice {
     pub id: DeviceId,
     pub config: DeviceConfig,
-    pub event_node: String, // e.g., "event0"
+    pub event_node: String,            // e.g., "event0"
+    pub joystick_node: Option<String>, // e.g., "js0"
     socket_path: PathBuf,
+    joystick_socket_path: Option<PathBuf>,
     base_path: PathBuf,
-    dev_input_symlink: Option<PathBuf>, // symlink in /dev/input
     clients: Arc<Mutex<Vec<UnixStream>>>,
+    joystick_clients: Arc<Mutex<Vec<UnixStream>>>,
 }
 
 impl VirtualDevice {
@@ -44,41 +46,43 @@ impl VirtualDevice {
             Self::accept_clients(listener, clients_clone).await;
         });
 
-        // Try to create symlink in /dev/input
-        let dev_input_symlink = Self::try_create_dev_symlink(&event_node, &socket_path);
+        // Create joystick interface if device has axes or buttons
+        let (joystick_node, joystick_socket_path, joystick_clients) =
+            if !config.buttons.is_empty() || !config.axes.is_empty() {
+                let js_node = format!("js{}", id);
+                let js_socket_path = base_path.join("devices").join(&js_node);
+
+                // Remove old socket if exists
+                let _ = std::fs::remove_file(&js_socket_path);
+
+                // Create joystick socket
+                let js_listener = UnixListener::bind(&js_socket_path)?;
+
+                let js_clients = Arc::new(Mutex::new(Vec::new()));
+                let js_clients_clone = Arc::clone(&js_clients);
+
+                tokio::spawn(async move {
+                    Self::accept_clients(js_listener, js_clients_clone).await;
+                });
+
+                info!("Created joystick node: {}", js_node);
+
+                (Some(js_node), Some(js_socket_path), js_clients)
+            } else {
+                (None, None, Arc::new(Mutex::new(Vec::new())))
+            };
 
         Ok(Self {
             id,
             config,
             event_node,
+            joystick_node,
             socket_path,
+            joystick_socket_path,
             base_path: base_path.to_path_buf(),
-            dev_input_symlink,
             clients,
+            joystick_clients,
         })
-    }
-
-    /// Try to create a symlink in /dev/input pointing to our socket
-    fn try_create_dev_symlink(event_node: &str, socket_path: &Path) -> Option<PathBuf> {
-        let symlink_path = PathBuf::from("/dev/input").join(event_node);
-
-        match std::os::unix::fs::symlink(socket_path, &symlink_path) {
-            Ok(_) => {
-                info!(
-                    "Created symlink: {} -> {}",
-                    symlink_path.display(),
-                    socket_path.display()
-                );
-                Some(symlink_path)
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to create symlink in /dev/input (this is OK, using shim fallback): {}",
-                    e
-                );
-                None
-            }
-        }
     }
 
     /// Accept client connections to device socket
@@ -97,8 +101,19 @@ impl VirtualDevice {
         }
     }
 
-    /// Send input events to all connected clients
+    /// Send input events to all connected clients (both evdev and joystick)
     pub async fn send_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
+        // Send to evdev clients
+        self.send_evdev_events(events).await?;
+
+        // Send to joystick clients
+        self.send_joystick_events(events).await?;
+
+        Ok(())
+    }
+
+    /// Send evdev events
+    async fn send_evdev_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
         let mut linux_events = Vec::new();
         let mut has_sync = false;
 
@@ -140,13 +155,13 @@ impl VirtualDevice {
             data.extend_from_slice(&event.to_bytes());
         }
 
-        // Send to all connected clients
+        // Send to all connected evdev clients
         let mut clients = self.clients.lock().await;
         let mut disconnected = Vec::new();
 
         for (idx, client) in clients.iter_mut().enumerate() {
             if let Err(e) = client.write_all(&data).await {
-                error!("Failed to write to client: {}", e);
+                error!("Failed to write to evdev client: {}", e);
                 disconnected.push(idx);
             }
         }
@@ -158,6 +173,116 @@ impl VirtualDevice {
 
         Ok(())
     }
+
+    /// Send joystick events
+    async fn send_joystick_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
+        if self.joystick_node.is_none() {
+            return Ok(());
+        }
+
+        // Joystick event structure
+        #[repr(C)]
+        struct JsEvent {
+            time: u32,  // event timestamp in milliseconds
+            value: i16, // value
+            type_: u8,  // event type
+            number: u8, // axis/button number
+        }
+
+        const JS_EVENT_BUTTON: u8 = 0x01;
+        const JS_EVENT_AXIS: u8 = 0x02;
+
+        let mut js_events = Vec::new();
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u32;
+
+        for event in events {
+            match event {
+                InputEvent::Button { button, pressed } => {
+                    // Map button to joystick button number
+                    let number = Self::button_to_js_number(*button);
+                    js_events.push(JsEvent {
+                        time,
+                        value: if *pressed { 1 } else { 0 },
+                        type_: JS_EVENT_BUTTON,
+                        number,
+                    });
+                }
+                InputEvent::Axis { axis, value } => {
+                    // Map axis to joystick axis number
+                    let number = Self::axis_to_js_number(*axis);
+                    // Normalize value to i16 range
+                    let normalized_value = (*value as i16).clamp(i16::MIN, i16::MAX);
+                    js_events.push(JsEvent {
+                        time,
+                        value: normalized_value,
+                        type_: JS_EVENT_AXIS,
+                        number,
+                    });
+                }
+                _ => {} // Ignore raw events and sync for joystick
+            }
+        }
+
+        // Convert to bytes
+        let mut data = Vec::new();
+        for event in &js_events {
+            let bytes: [u8; 8] = unsafe { std::mem::transmute(event) };
+            data.extend_from_slice(&bytes);
+        }
+
+        // Send to all connected joystick clients
+        let mut clients = self.joystick_clients.lock().await;
+        let mut disconnected = Vec::new();
+
+        for (idx, client) in clients.iter_mut().enumerate() {
+            if let Err(e) = client.write_all(&data).await {
+                error!("Failed to write to joystick client: {}", e);
+                disconnected.push(idx);
+            }
+        }
+
+        // Remove disconnected clients
+        for idx in disconnected.iter().rev() {
+            clients.remove(*idx);
+        }
+
+        Ok(())
+    }
+
+    /// Map button to joystick button number
+    fn button_to_js_number(button: Button) -> u8 {
+        match button {
+            Button::A => 0,
+            Button::B => 1,
+            Button::X => 2,
+            Button::Y => 3,
+            Button::LeftBumper => 4,
+            Button::RightBumper => 5,
+            Button::Select => 6,
+            Button::Start => 7,
+            Button::Guide => 8,
+            Button::LeftStick => 9,
+            Button::RightStick => 10,
+            Button::Custom(code) => (code % 256) as u8,
+            _ => 0,
+        }
+    }
+
+    /// Map axis to joystick axis number
+    fn axis_to_js_number(axis: Axis) -> u8 {
+        match axis {
+            Axis::LeftStickX => 0,
+            Axis::LeftStickY => 1,
+            Axis::RightStickX => 2,
+            Axis::RightStickY => 3,
+            Axis::LeftTrigger => 4,
+            Axis::RightTrigger => 5,
+            Axis::Custom(code) => (code % 256) as u8,
+            _ => 0,
+        }
+    }
 }
 
 impl Drop for VirtualDevice {
@@ -165,10 +290,9 @@ impl Drop for VirtualDevice {
         // Clean up socket file
         let _ = std::fs::remove_file(&self.socket_path);
 
-        // Clean up symlink if it exists
-        if let Some(symlink) = &self.dev_input_symlink {
-            let _ = std::fs::remove_file(symlink);
-            info!("Removed symlink: {}", symlink.display());
+        // Clean up joystick socket
+        if let Some(js_socket) = &self.joystick_socket_path {
+            let _ = std::fs::remove_file(js_socket);
         }
 
         // Clean up sysfs files

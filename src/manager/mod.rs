@@ -277,6 +277,7 @@ impl Manager {
                         device_id: d.id,
                         name: d.config.name.clone(),
                         event_node: d.event_node.clone(),
+                        joystick_node: d.joystick_node.clone(),
                         vendor_id: d.config.vendor_id,
                         product_id: d.config.product_id,
                     })

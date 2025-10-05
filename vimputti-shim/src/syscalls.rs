@@ -11,6 +11,7 @@ lazy_static::lazy_static! {
 
 struct DeviceInfo {
     event_node: String,
+    is_joystick: bool,
 }
 
 /// Open a device node (actually connect to Unix socket)
@@ -31,15 +32,22 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                 .unwrap_or("unknown")
                 .to_string();
 
+            // Check if this is a joystick device
+            let is_joystick = event_node.starts_with("js");
+
             // Register this FD as a virtual device
             VIRTUAL_DEVICE_FDS.lock().unwrap().insert(
                 fd,
                 DeviceInfo {
                     event_node: event_node.clone(),
+                    is_joystick,
                 },
             );
 
-            debug!("Opened virtual device: fd={}, node={}", fd, event_node);
+            debug!(
+                "Opened virtual device: fd={}, node={}, is_joystick={}",
+                fd, event_node, is_joystick
+            );
             fd
         }
         Err(e) => {
@@ -55,16 +63,118 @@ pub fn is_virtual_device_fd(fd: RawFd) -> bool {
 }
 
 /// Handle ioctl() calls on virtual device FDs
-pub unsafe fn handle_ioctl(_fd: RawFd, request: c_uint, args: &mut std::ffi::VaListImpl) -> c_int {
+pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaListImpl) -> c_int {
+    debug!(
+        "ioctl on fd={}, request=0x{:08x} (type={}, nr={}, size={})",
+        fd,
+        request,
+        (request >> 8) & 0xFF,
+        request & 0xFF,
+        (request >> 16) & 0x3FFF
+    );
+
+    // Check if this is a joystick device
+    let device_info = VIRTUAL_DEVICE_FDS.lock().unwrap();
+    let is_joystick = device_info
+        .get(&fd)
+        .map(|info| info.is_joystick)
+        .unwrap_or(false);
+    drop(device_info);
+
+    if is_joystick {
+        return unsafe { handle_joystick_ioctl(fd, request, args) };
+    }
+
+    // Handle evdev ioctls
+    unsafe { handle_evdev_ioctl(fd, request, args) }
+}
+
+/// Handle joystick interface ioctl calls
+unsafe fn handle_joystick_ioctl(
+    _fd: RawFd,
+    request: c_uint,
+    args: &mut std::ffi::VaListImpl,
+) -> c_int {
+    // Joystick interface ioctl constants
+    const JSIOCGVERSION: u32 = 0x80046a01;
+    const JSIOCGAXES: u32 = 0x80016a11;
+    const JSIOCGBUTTONS: u32 = 0x80016a12;
+    const JSIOCGNAME_BASE: u32 = 0x80006a13;
+
+    let request_type = (request >> 8) & 0xFF;
+    let request_nr = request & 0xFF;
+
+    match request {
+        JSIOCGVERSION => {
+            // Return joystick driver version
+            let ptr: *mut c_int = unsafe { args.arg() };
+            if !ptr.is_null() {
+                unsafe {
+                    *ptr = 0x020100;
+                } // Version 2.1.0
+                debug!("ioctl JSIOCGVERSION: returning 0x020100");
+            }
+            0
+        }
+
+        JSIOCGAXES => {
+            // Return number of axes
+            let ptr: *mut u8 = unsafe { args.arg() };
+            if !ptr.is_null() {
+                unsafe {
+                    *ptr = 6;
+                } // TODO: Get real axis count from device
+                debug!("ioctl JSIOCGAXES: returning 6 axes");
+            }
+            0
+        }
+
+        JSIOCGBUTTONS => {
+            // Return number of buttons
+            let ptr: *mut u8 = unsafe { args.arg() };
+            if !ptr.is_null() {
+                unsafe {
+                    *ptr = 11;
+                } // TODO: Get real button count from device
+                debug!("ioctl JSIOCGBUTTONS: returning 11 buttons");
+            }
+            0
+        }
+
+        _ if request_type == 0x6a && request_nr == 0x13 => {
+            // JSIOCGNAME - Get device name
+            let ptr: *mut u8 = unsafe { args.arg() };
+            let len = ((request >> 16) & 0xFF) as usize;
+
+            if !ptr.is_null() && len > 0 {
+                let name = b"Microsoft X-Box 360 pad\0";
+                let copy_len = std::cmp::min(name.len(), len);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(name.as_ptr(), ptr, copy_len);
+                }
+                debug!("ioctl JSIOCGNAME: returning 'Microsoft X-Box 360 pad'");
+                copy_len as c_int
+            } else {
+                -1
+            }
+        }
+
+        _ => {
+            debug!("ioctl: unknown joystick request 0x{:08x}", request);
+            0
+        }
+    }
+}
+
+/// Handle evdev interface ioctl calls
+unsafe fn handle_evdev_ioctl(
+    _fd: RawFd,
+    request: c_uint,
+    args: &mut std::ffi::VaListImpl,
+) -> c_int {
     // Linux input device ioctl constants
     const EVIOCGVERSION: c_uint = 0x80044501;
     const EVIOCGID: c_uint = 0x80084502;
-    const EVIOCGNAME_BASE: c_uint = 0x80000000 | (b'E' as c_uint) << 8 | 0x06;
-    const EVIOCGPHYS_BASE: c_uint = 0x80000000 | (b'E' as c_uint) << 8 | 0x07;
-    const EVIOCGUNIQ_BASE: c_uint = 0x80000000 | (b'E' as c_uint) << 8 | 0x08;
-    const EVIOCGPROP_BASE: c_uint = 0x80000000 | (b'E' as c_uint) << 8 | 0x09;
-    const EVIOCGBIT_BASE: c_uint = 0x80000000 | (b'E' as c_uint) << 8 | 0x20;
-    const EVIOCGABS_BASE: c_uint = 0x80000000 | (b'E' as c_uint) << 8 | 0x40;
 
     let request_nr = request & 0xFF;
     let request_type = (request >> 8) & 0xFF;
@@ -169,7 +279,9 @@ pub unsafe fn handle_ioctl(_fd: RawFd, request: c_uint, args: &mut std::ffi::VaL
 
             if !ptr.is_null() && len > 0 {
                 // Zero out properties
-                unsafe { std::ptr::write_bytes(ptr, 0, len) };
+                unsafe {
+                    std::ptr::write_bytes(ptr, 0, len);
+                }
                 debug!("ioctl EVIOCGPROP: returning empty properties");
                 0
             } else {
@@ -203,7 +315,6 @@ pub unsafe fn handle_ioctl(_fd: RawFd, request: c_uint, args: &mut std::ffi::VaL
                         // EV_KEY - buttons
                         // Set bits for common gamepad buttons (BTN_SOUTH=304 to BTN_THUMBR=318)
                         if len >= 40 {
-                            let _buttons_start = 304 / 8;
                             for i in 304..=318 {
                                 let byte_idx = i / 8;
                                 let bit_idx = i % 8;

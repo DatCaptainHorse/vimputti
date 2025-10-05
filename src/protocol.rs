@@ -235,6 +235,7 @@ pub struct DeviceInfo {
     pub device_id: DeviceId,
     pub name: String,
     pub event_node: String,
+    pub joystick_node: Option<String>,
     pub vendor_id: u16,
     pub product_id: u16,
 }

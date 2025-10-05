@@ -22,6 +22,15 @@ impl PathRedirector {
             ));
         }
 
+        // Redirect /dev/input/jsX to our joystick sockets
+        if path.starts_with("/dev/input/js") {
+            return Some(format!(
+                "{}/devices/{}",
+                self.base_path,
+                path.strip_prefix("/dev/input/").unwrap()
+            ));
+        }
+
         // Redirect /sys/class/input to our sysfs
         if path.starts_with("/sys/class/input/") {
             let suffix = path.strip_prefix("/sys/class/input/").unwrap();
