@@ -491,7 +491,7 @@ unsafe fn handle_evdev_ioctl(
                         debug!("ioctl EVIOCGBIT({}): unknown type", ev_type);
                     }
                 }
-                len as c_int
+                0
             } else {
                 -1
             }
