@@ -769,8 +769,10 @@ dependencies = [
  "lazy_static",
  "libc",
  "libloading",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
+ "vimputti",
 ]
 
 [[package]]

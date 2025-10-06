@@ -6,7 +6,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_long;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 mod libudev;
 mod path_redirect;

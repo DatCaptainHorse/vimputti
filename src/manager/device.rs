@@ -42,8 +42,9 @@ impl VirtualDevice {
 
         // Start accepting client connections
         let clients_clone = Arc::clone(&clients);
+        let config_clone = config.clone();
         tokio::spawn(async move {
-            Self::accept_clients(listener, clients_clone).await;
+            Self::accept_clients(listener, clients_clone, config_clone).await;
         });
 
         // Create joystick interface if device has axes or buttons
@@ -60,9 +61,10 @@ impl VirtualDevice {
 
                 let js_clients = Arc::new(Mutex::new(Vec::new()));
                 let js_clients_clone = Arc::clone(&js_clients);
+                let config_clone = config.clone();
 
                 tokio::spawn(async move {
-                    Self::accept_clients(js_listener, js_clients_clone).await;
+                    Self::accept_clients(js_listener, js_clients_clone, config_clone).await;
                 });
 
                 info!("Created joystick node: {}", js_node);
@@ -86,11 +88,37 @@ impl VirtualDevice {
     }
 
     /// Accept client connections to device socket
-    async fn accept_clients(listener: UnixListener, clients: Arc<Mutex<Vec<UnixStream>>>) {
+    async fn accept_clients(
+        listener: UnixListener,
+        clients: Arc<Mutex<Vec<UnixStream>>>,
+        config: DeviceConfig,
+    ) {
         loop {
             match listener.accept().await {
-                Ok((stream, _)) => {
+                Ok((mut stream, _)) => {
                     info!("Client connected to device socket");
+
+                    // Send device config to the client as the first message
+                    // Format: 4-byte length prefix + JSON config
+                    match serde_json::to_vec(&config) {
+                        Ok(config_json) => {
+                            let len = config_json.len() as u32;
+                            if let Err(e) = stream.write_all(&len.to_le_bytes()).await {
+                                error!("Failed to send config length to client: {}", e);
+                                continue;
+                            }
+                            if let Err(e) = stream.write_all(&config_json).await {
+                                error!("Failed to send config to client: {}", e);
+                                continue;
+                            }
+                            info!("Sent device config to client ({} bytes)", config_json.len());
+                        }
+                        Err(e) => {
+                            error!("Failed to serialize device config: {}", e);
+                            continue;
+                        }
+                    }
+
                     clients.lock().await.push(stream);
                 }
                 Err(e) => {
@@ -181,7 +209,7 @@ impl VirtualDevice {
         }
 
         // Joystick event structure
-        #[repr(C)]
+        #[repr(C, packed)]
         struct JsEvent {
             time: u32,  // event timestamp in milliseconds
             value: i16, // value
@@ -225,11 +253,13 @@ impl VirtualDevice {
             }
         }
 
-        // Convert to bytes
-        let mut data = Vec::new();
+        // Convert to bytes - manually serialize to ensure correct layout
+        let mut data = Vec::with_capacity(js_events.len() * 8);
         for event in &js_events {
-            let bytes: [u8; 8] = unsafe { std::mem::transmute(event) };
-            data.extend_from_slice(&bytes);
+            data.extend_from_slice(&event.time.to_ne_bytes());
+            data.extend_from_slice(&event.value.to_ne_bytes());
+            data.push(event.type_);
+            data.push(event.number);
         }
 
         // Send to all connected joystick clients

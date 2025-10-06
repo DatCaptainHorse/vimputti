@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::os::unix::io::RawFd;
 use std::sync::Mutex;
 use tracing::{debug, warn};
+use vimputti::{Axis, DeviceConfig};
 
 lazy_static::lazy_static! {
     // Track which FDs are our virtual device sockets
@@ -13,22 +14,32 @@ lazy_static::lazy_static! {
 struct DeviceInfo {
     event_node: String,
     is_joystick: bool,
-    num_buttons: u8,
-    num_axes: u8,
-    device_name: String,
+    config: DeviceConfig,
+}
+impl DeviceInfo {
+    fn num_axes(&self) -> u8 {
+        self.config.axes.len() as u8
+    }
+
+    fn num_buttons(&self) -> u8 {
+        self.config.buttons.len() as u8
+    }
+
+    fn device_name(&self) -> &str {
+        &self.config.name
+    }
 }
 
 /// Open a device node (actually connect to Unix socket)
 pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
+    use std::io::Read;
     use std::os::unix::io::IntoRawFd;
     use std::os::unix::net::UnixStream;
 
     debug!("Opening device node: {}", socket_path);
 
     match UnixStream::connect(socket_path) {
-        Ok(stream) => {
-            let fd = stream.into_raw_fd();
-
+        Ok(mut stream) => {
             // Extract event node name from path
             let event_node = socket_path
                 .split('/')
@@ -39,12 +50,39 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
             // Check if this is a joystick device
             let is_joystick = event_node.starts_with("js");
 
-            // Try to read device info from sysfs
-            let (num_buttons, num_axes, device_name) = if is_joystick {
-                read_device_info_from_sysfs(&event_node)
-            } else {
-                (11, 6, "Virtual Controller".to_string())
+            // Receive device config from daemon
+            // Format: 4-byte length prefix + JSON config
+            let mut len_buf = [0u8; 4];
+            let config = match stream.read_exact(&mut len_buf) {
+                Ok(_) => {
+                    let config_len = u32::from_le_bytes(len_buf) as usize;
+                    debug!("Receiving device config ({} bytes)", config_len);
+
+                    let mut config_buf = vec![0u8; config_len];
+                    match stream.read_exact(&mut config_buf) {
+                        Ok(_) => match serde_json::from_slice::<DeviceConfig>(&config_buf) {
+                            Ok(config) => {
+                                debug!("Successfully received device config: {}", config.name);
+                                config
+                            }
+                            Err(e) => {
+                                warn!("Failed to deserialize device config: {}, using default", e);
+                                create_default_config()
+                            }
+                        },
+                        Err(e) => {
+                            warn!("Failed to read device config data: {}, using default", e);
+                            create_default_config()
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to read config length: {}, using default", e);
+                    create_default_config()
+                }
             };
+
+            let fd = stream.into_raw_fd();
 
             // Register this FD as a virtual device
             VIRTUAL_DEVICE_FDS.lock().unwrap().insert(
@@ -52,15 +90,17 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                 DeviceInfo {
                     event_node: event_node.clone(),
                     is_joystick,
-                    num_buttons,
-                    num_axes,
-                    device_name,
+                    config: config.clone(),
                 },
             );
 
             debug!(
                 "Opened virtual device: fd={}, node={}, is_joystick={}, buttons={}, axes={}",
-                fd, event_node, is_joystick, num_buttons, num_axes
+                fd,
+                event_node,
+                is_joystick,
+                config.buttons.len(),
+                config.axes.len()
             );
             fd
         }
@@ -68,6 +108,41 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
             warn!("Failed to connect to device socket {}: {}", socket_path, e);
             -1
         }
+    }
+}
+
+fn create_default_config() -> DeviceConfig {
+    use vimputti::{Axis, AxisConfig, BusType, Button};
+
+    DeviceConfig {
+        name: "Xbox 360 Controller".to_string(),
+        vendor_id: 0x045e,
+        product_id: 0x028e,
+        version: 0x0110,
+        bustype: BusType::Usb,
+        buttons: vec![
+            Button::A,
+            Button::B,
+            Button::X,
+            Button::Y,
+            Button::LeftBumper,
+            Button::RightBumper,
+            Button::Select,
+            Button::Start,
+            Button::Guide,
+            Button::LeftStick,
+            Button::RightStick,
+        ],
+        axes: vec![
+            AxisConfig::new(Axis::LeftStickX, -32768, 32767),
+            AxisConfig::new(Axis::LeftStickY, -32768, 32767),
+            AxisConfig::new(Axis::RightStickX, -32768, 32767),
+            AxisConfig::new(Axis::RightStickY, -32768, 32767),
+            AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
+            AxisConfig::new(Axis::RightTrigger, -32768, 32767),
+            AxisConfig::new(Axis::DPadX, -1, 1),
+            AxisConfig::new(Axis::DPadY, -1, 1),
+        ],
     }
 }
 
@@ -183,9 +258,12 @@ unsafe fn handle_joystick_ioctl(
             let ptr: *mut u8 = unsafe { args.arg() };
             if !ptr.is_null() {
                 unsafe {
-                    *ptr = device_info.num_axes;
+                    *ptr = device_info.num_axes();
                 }
-                debug!("ioctl JSIOCGAXES: returning {} axes", device_info.num_axes);
+                debug!(
+                    "ioctl JSIOCGAXES: returning {} axes",
+                    device_info.num_axes()
+                );
             }
             0
         }
@@ -194,11 +272,11 @@ unsafe fn handle_joystick_ioctl(
             let ptr: *mut u8 = unsafe { args.arg() };
             if !ptr.is_null() {
                 unsafe {
-                    *ptr = device_info.num_buttons;
+                    *ptr = device_info.num_buttons();
                 }
                 debug!(
                     "ioctl JSIOCGBUTTONS: returning {} buttons",
-                    device_info.num_buttons
+                    device_info.num_buttons()
                 );
             }
             0
@@ -265,7 +343,7 @@ unsafe fn handle_joystick_ioctl(
             let len = ((request >> 16) & 0xFF) as usize;
 
             if !ptr.is_null() && len > 0 {
-                let name_bytes = device_info.device_name.as_bytes();
+                let name_bytes = device_info.device_name().as_bytes();
                 let copy_len = std::cmp::min(name_bytes.len(), len - 1);
                 unsafe {
                     std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr, copy_len);
@@ -273,7 +351,10 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     *ptr.add(copy_len) = 0;
                 } // Null terminator
-                debug!("ioctl JSIOCGNAME: returning '{}'", device_info.device_name);
+                debug!(
+                    "ioctl JSIOCGNAME: returning '{}'",
+                    device_info.device_name()
+                );
                 copy_len as c_int
             } else {
                 -1
@@ -325,13 +406,16 @@ unsafe fn handle_evdev_ioctl(
             if !ptr.is_null() {
                 unsafe {
                     *ptr = InputId {
-                        bustype: 0x03,
-                        vendor: 0x045e,
-                        product: 0x028e,
-                        version: 0x0110,
+                        bustype: device_info.config.bustype as u16,
+                        vendor: device_info.config.vendor_id,
+                        product: device_info.config.product_id,
+                        version: device_info.config.version,
                     };
                 }
-                debug!("ioctl EVIOCGID: returning Xbox 360 controller ID");
+                debug!(
+                    "ioctl EVIOCGID: returning vendor=0x{:04x}, product=0x{:04x}",
+                    device_info.config.vendor_id, device_info.config.product_id
+                );
             }
             0
         }
@@ -341,7 +425,7 @@ unsafe fn handle_evdev_ioctl(
             let len = ((request >> 16) & 0x1FFF) as usize;
 
             if !ptr.is_null() && len > 0 {
-                let name_bytes = device_info.device_name.as_bytes();
+                let name_bytes = device_info.device_name().as_bytes();
                 let copy_len = std::cmp::min(name_bytes.len(), len - 1);
                 unsafe {
                     std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr, copy_len);
@@ -349,7 +433,10 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     *ptr.add(copy_len) = 0;
                 }
-                debug!("ioctl EVIOCGNAME: returning '{}'", device_info.device_name);
+                debug!(
+                    "ioctl EVIOCGNAME: returning '{}'",
+                    device_info.device_name()
+                );
                 copy_len as c_int
             } else {
                 -1
@@ -472,33 +559,35 @@ unsafe fn handle_evdev_ioctl(
 
             let ptr: *mut InputAbsinfo = unsafe { args.arg() };
             if !ptr.is_null() {
+                // Try to find the axis in the device config
+                let axis_info = {
+                    device_info
+                        .config
+                        .axes
+                        .iter()
+                        .find(|a| axis_to_evdev_code(&a.axis) == axis)
+                        .map(|a| InputAbsinfo {
+                            value: 0,
+                            minimum: a.min,
+                            maximum: a.max,
+                            fuzz: if a.max > 1000 { 16 } else { 0 },
+                            flat: if a.max > 1000 { 128 } else { 0 },
+                            resolution: 0,
+                        })
+                };
+
+                // Fallback to defaults if not found
+                let default_info = InputAbsinfo {
+                    value: 0,
+                    minimum: -32768,
+                    maximum: 32767,
+                    fuzz: 16,
+                    flat: 128,
+                    resolution: 0,
+                };
+
                 unsafe {
-                    *ptr = match axis {
-                        0..=1 => InputAbsinfo {
-                            value: 0,
-                            minimum: -32768,
-                            maximum: 32767,
-                            fuzz: 16,
-                            flat: 128,
-                            resolution: 0,
-                        },
-                        2..=5 => InputAbsinfo {
-                            value: 0,
-                            minimum: 0,
-                            maximum: 255,
-                            fuzz: 0,
-                            flat: 15,
-                            resolution: 0,
-                        },
-                        _ => InputAbsinfo {
-                            value: 0,
-                            minimum: -1,
-                            maximum: 1,
-                            fuzz: 0,
-                            flat: 0,
-                            resolution: 0,
-                        },
-                    };
+                    *ptr = axis_info.unwrap_or(default_info);
                 }
                 debug!("ioctl EVIOCGABS({}): returning axis info", axis);
                 0
@@ -518,5 +607,19 @@ unsafe fn handle_evdev_ioctl(
 pub fn close_virtual_device(fd: RawFd) {
     if let Some(info) = VIRTUAL_DEVICE_FDS.lock().unwrap().remove(&fd) {
         debug!("Closed virtual device: fd={}, node={}", fd, info.event_node);
+    }
+}
+
+fn axis_to_evdev_code(axis: &Axis) -> u32 {
+    match axis {
+        Axis::LeftStickX => 0,   // ABS_X
+        Axis::LeftStickY => 1,   // ABS_Y
+        Axis::LeftTrigger => 2,  // ABS_Z
+        Axis::RightStickX => 3,  // ABS_RX
+        Axis::RightStickY => 4,  // ABS_RY
+        Axis::RightTrigger => 5, // ABS_RZ
+        Axis::DPadX => 16,       // ABS_HAT0X
+        Axis::DPadY => 17,       // ABS_HAT0Y
+        Axis::Custom(code) => *code as u32,
     }
 }
