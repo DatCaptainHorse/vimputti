@@ -271,6 +271,17 @@ pub struct LinuxInputEvent {
     pub value: i32,
 }
 
+/// Linux ABS input event structure (for absolute axes)
+#[repr(C, packed)]
+pub struct LinuxAbsEvent {
+    pub value: i32,
+    pub minimum: i32,
+    pub maximum: i32,
+    pub fuzz: i32,
+    pub flat: i32,
+    pub resolution: i32,
+}
+
 /// Linux joystick input event structure (for joystick nodes)
 #[repr(C, packed)]
 pub struct LinuxJsEvent {

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::os::unix::io::RawFd;
 use std::sync::Mutex;
 use tracing::{debug, warn};
-use vimputti::{Axis, DeviceConfig};
+use vimputti::*;
 
 lazy_static::lazy_static! {
     // Track which FDs are our virtual device sockets
@@ -277,6 +277,22 @@ unsafe fn handle_joystick_ioctl(
     }
 }
 
+/* Linux input EV reference:
+#define EVIOCGNAME(len)		_IOC(_IOC_READ, 'E', 0x06, len)		/* get device name */
+#define EVIOCGPHYS(len)		_IOC(_IOC_READ, 'E', 0x07, len)		/* get physical location */
+#define EVIOCGUNIQ(len)		_IOC(_IOC_READ, 'E', 0x08, len)		/* get unique identifier */
+#define EVIOCGPROP(len)		_IOC(_IOC_READ, 'E', 0x09, len)		/* get device properties */
+
+#define EVIOCGKEY(len)		_IOC(_IOC_READ, 'E', 0x18, len)		/* get global key state */
+#define EVIOCGLED(len)		_IOC(_IOC_READ, 'E', 0x19, len)		/* get all LEDs */
+#define EVIOCGSND(len)		_IOC(_IOC_READ, 'E', 0x1a, len)		/* get all sounds status */
+#define EVIOCGSW(len)		_IOC(_IOC_READ, 'E', 0x1b, len)		/* get all switch states */
+
+#define EVIOCGBIT(ev,len)	_IOC(_IOC_READ, 'E', 0x20 + (ev), len)	/* get event bits */
+#define EVIOCGABS(abs)		_IOR('E', 0x40 + (abs), struct input_absinfo)	/* get abs value/limits */
+#define EVIOCSABS(abs)		_IOW('E', 0xc0 + (abs), struct input_absinfo)	/* set abs value/limits */
+*/
+
 /// Handle evdev interface ioctl calls
 unsafe fn handle_evdev_ioctl(
     _fd: RawFd,
@@ -286,9 +302,40 @@ unsafe fn handle_evdev_ioctl(
 ) -> c_int {
     const EVIOCGVERSION: c_uint = 0x80044501;
     const EVIOCGID: c_uint = 0x80084502;
+    const EVIOCGNAME: c_uint = 0x81004506;
+    const EVIOCGPHYS: c_uint = 0x81004507;
+    const EVIOCGUNIQ: c_uint = 0x81004508;
+    const EVIOCGPROP: c_uint = 0x81004509;
 
-    let request_nr = request & 0xFF;
-    let request_type = (request >> 8) & 0xFF;
+    // evdev ioctl request number ranges
+    const EVIOCG_TYPE_MASK: u32 = 0xFF;
+    const EVIOCG_NR_MASK: u32 = 0xFF;
+    const EVIOCG_SIZE_SHIFT: u32 = 16;
+    const EVIOCG_SIZE_MASK: u32 = 0x3FFF;
+
+    // Request type for evdev ioctls
+    const EVDEV_IOC_TYPE: u32 = b'E' as u32;
+
+    // evdev ioctl number ranges
+    const EVIOCGBIT_NR_BASE: u32 = 0x20;
+    const EVIOCGBIT_NR_END: u32 = 0x40;
+    const EVIOCGABS_NR_BASE: u32 = 0x40;
+    const EVIOCGABS_NR_END: u32 = 0x80;
+
+    // Helper to extract ioctl components
+    fn extract_request_type(request: u32) -> u32 {
+        (request >> 8) & EVIOCG_TYPE_MASK
+    }
+
+    fn extract_request_nr(request: u32) -> u32 {
+        request & EVIOCG_NR_MASK
+    }
+
+    fn extract_request_size(request: u32) -> usize {
+        ((request >> EVIOCG_SIZE_SHIFT) & EVIOCG_SIZE_MASK) as usize
+    }
+
+    let request_nr = extract_request_nr(request);
 
     match request {
         EVIOCGVERSION => {
@@ -329,7 +376,7 @@ unsafe fn handle_evdev_ioctl(
             0
         }
 
-        _ if request_type == b'E' as u32 && request_nr == 0x06 => {
+        EVIOCGNAME => {
             let ptr: *mut u8 = unsafe { args.arg() };
             let len = ((request >> 16) & 0x1FFF) as usize;
 
@@ -352,7 +399,7 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        _ if request_type == b'E' as u32 && request_nr == 0x07 => {
+        EVIOCGPHYS => {
             let ptr: *mut u8 = unsafe { args.arg() };
             let len = ((request >> 16) & 0x1FFF) as usize;
 
@@ -369,7 +416,7 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        _ if request_type == b'E' as u32 && request_nr == 0x08 => {
+        EVIOCGUNIQ => {
             let ptr: *mut u8 = unsafe { args.arg() };
             let len = ((request >> 16) & 0x1FFF) as usize;
 
@@ -384,7 +431,7 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        _ if request_type == b'E' as u32 && request_nr == 0x09 => {
+        EVIOCGPROP => {
             let ptr: *mut u8 = unsafe { args.arg() };
             let len = ((request >> 16) & 0x1FFF) as usize;
 
@@ -399,74 +446,61 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        _ if request_type == b'E' as u32 && request_nr >= 0x20 && request_nr < 0x40 => {
-            let ev_type = request_nr - 0x20;
+        // EVIOCGBIT(ev, len) - get event bits for specific event type
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE
+            && request_nr >= EVIOCGBIT_NR_BASE
+            && request_nr < EVIOCGBIT_NR_END =>
+        {
+            let ev_type = request_nr - EVIOCGBIT_NR_BASE;
             let ptr: *mut u8 = unsafe { args.arg() };
-            let len = ((request >> 16) & 0x1FFF) as usize;
+            let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
+                // Clear buffer
                 unsafe {
                     std::ptr::write_bytes(ptr, 0, len);
                 }
 
-                match ev_type {
-                    0 => {
-                        if len > 0 {
+                // Set bits based on device config
+                match ev_type as u16 {
+                    EV_SYN => unsafe {
+                        *ptr |= 1 << (0 % 8);
+                    },
+                    EV_KEY => {
+                        for button in &device_info.config.buttons {
+                            let code = button.to_ev_code() as usize;
                             unsafe {
-                                *ptr = 0b00001011;
+                                *ptr.add(code / 8) |= 1 << (code % 8);
                             }
                         }
-                        debug!("ioctl EVIOCGBIT(0): returning supported event types");
                     }
-                    1 => {
-                        if len >= 40 {
-                            for i in 304..=318 {
-                                let byte_idx = i / 8;
-                                let bit_idx = i % 8;
-                                if byte_idx < len {
-                                    unsafe {
-                                        *ptr.add(byte_idx) |= 1 << bit_idx;
-                                    }
-                                }
-                            }
-                        }
-                        debug!("ioctl EVIOCGBIT(EV_KEY): returning button bits");
-                    }
-                    3 => {
-                        if len > 0 {
+                    EV_ABS => {
+                        for axis in &device_info.config.axes {
+                            let code = axis.axis.to_ev_code() as usize;
                             unsafe {
-                                *ptr = 0b00111111;
+                                *ptr.add(code / 8) |= 1 << (code % 8);
                             }
                         }
                         debug!("ioctl EVIOCGBIT(EV_ABS): returning axis bits");
                     }
                     _ => {
-                        debug!(
-                            "ioctl EVIOCGBIT({}): unknown type, returning empty",
-                            ev_type
-                        );
+                        debug!("ioctl EVIOCGBIT({}): unknown type", ev_type);
                     }
                 }
-                0
+                len as c_int
             } else {
                 -1
             }
         }
 
-        _ if request_type == b'E' as u32 && request_nr >= 0x40 && request_nr < 0x80 => {
-            let axis = request_nr - 0x40;
+        // EVIOCGABS(abs) - get abs axis info
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE
+            && request_nr >= EVIOCGABS_NR_BASE
+            && request_nr < EVIOCGABS_NR_END =>
+        {
+            let axis_code = request_nr - EVIOCGABS_NR_BASE;
+            let ptr: *mut LinuxAbsEvent = unsafe { args.arg() };
 
-            #[repr(C)]
-            struct InputAbsinfo {
-                value: i32,
-                minimum: i32,
-                maximum: i32,
-                fuzz: i32,
-                flat: i32,
-                resolution: i32,
-            }
-
-            let ptr: *mut InputAbsinfo = unsafe { args.arg() };
             if !ptr.is_null() {
                 // Try to find the axis in the device config
                 let axis_info = {
@@ -474,8 +508,8 @@ unsafe fn handle_evdev_ioctl(
                         .config
                         .axes
                         .iter()
-                        .find(|a| a.axis.to_ev_code() as u32 == axis)
-                        .map(|a| InputAbsinfo {
+                        .find(|a| a.axis.to_ev_code() as u32 == axis_code)
+                        .map(|a| LinuxAbsEvent {
                             value: 0,
                             minimum: a.min,
                             maximum: a.max,
@@ -486,7 +520,7 @@ unsafe fn handle_evdev_ioctl(
                 };
 
                 // Fallback to defaults if not found
-                let default_info = InputAbsinfo {
+                let default_info = LinuxAbsEvent {
                     value: 0,
                     minimum: -32768,
                     maximum: 32767,
@@ -498,13 +532,12 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     *ptr = axis_info.unwrap_or(default_info);
                 }
-                debug!("ioctl EVIOCGABS({}): returning axis info", axis);
+                debug!("ioctl EVIOCGABS({}): returning axis info", axis_code);
                 0
             } else {
                 -1
             }
         }
-
         _ => {
             debug!("ioctl: unknown request 0x{:08x} on virtual device", request);
             -1
