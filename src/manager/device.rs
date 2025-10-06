@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub struct VirtualDevice {
     pub id: DeviceId,

@@ -24,16 +24,18 @@ impl ControllerTemplates {
                 Button::Guide,      // Xbox button
                 Button::LeftStick,  // Left stick click
                 Button::RightStick, // Right stick click
+                Button::DPadUp,
+                Button::DPadDown,
+                Button::DPadLeft,
+                Button::DPadRight,
             ],
             axes: vec![
                 AxisConfig::new(Axis::LeftStickX, -32768, 32767),
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::LeftTrigger, 0, 255),
-                AxisConfig::new(Axis::RightTrigger, 0, 255),
-                AxisConfig::new(Axis::DPadX, -1, 1),
-                AxisConfig::new(Axis::DPadY, -1, 1),
+                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
             ],
         }
     }
@@ -58,16 +60,18 @@ impl ControllerTemplates {
                 Button::Guide,
                 Button::LeftStick,
                 Button::RightStick,
+                Button::DPadUp,
+                Button::DPadDown,
+                Button::DPadLeft,
+                Button::DPadRight,
             ],
             axes: vec![
                 AxisConfig::new(Axis::LeftStickX, -32768, 32767),
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::LeftTrigger, 0, 1023),
-                AxisConfig::new(Axis::RightTrigger, 0, 1023),
-                AxisConfig::new(Axis::DPadX, -1, 1),
-                AxisConfig::new(Axis::DPadY, -1, 1),
+                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
             ],
         }
     }
@@ -94,16 +98,18 @@ impl ControllerTemplates {
                 Button::Guide,        // PS button
                 Button::LeftStick,    // L3
                 Button::RightStick,   // R3
+                Button::DPadUp,
+                Button::DPadDown,
+                Button::DPadLeft,
+                Button::DPadRight,
             ],
             axes: vec![
-                AxisConfig::new(Axis::LeftStickX, 0, 255),
-                AxisConfig::new(Axis::LeftStickY, 0, 255),
-                AxisConfig::new(Axis::RightStickX, 0, 255),
-                AxisConfig::new(Axis::RightStickY, 0, 255),
-                AxisConfig::new(Axis::LeftTrigger, 0, 255),
-                AxisConfig::new(Axis::RightTrigger, 0, 255),
-                AxisConfig::new(Axis::DPadX, -1, 1),
-                AxisConfig::new(Axis::DPadY, -1, 1),
+                AxisConfig::new(Axis::LeftStickX, -32768, 32767),
+                AxisConfig::new(Axis::LeftStickY, -32768, 32767),
+                AxisConfig::new(Axis::RightStickX, -32768, 32767),
+                AxisConfig::new(Axis::RightStickY, -32768, 327675),
+                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
             ],
         }
     }
@@ -130,16 +136,18 @@ impl ControllerTemplates {
                 Button::Guide,        // PS button
                 Button::LeftStick,    // L3
                 Button::RightStick,   // R3
+                Button::DPadUp,
+                Button::DPadDown,
+                Button::DPadLeft,
+                Button::DPadRight,
             ],
             axes: vec![
-                AxisConfig::new(Axis::LeftStickX, 0, 255),
-                AxisConfig::new(Axis::LeftStickY, 0, 255),
-                AxisConfig::new(Axis::RightStickX, 0, 255),
-                AxisConfig::new(Axis::RightStickY, 0, 255),
-                AxisConfig::new(Axis::LeftTrigger, 0, 255),
-                AxisConfig::new(Axis::RightTrigger, 0, 255),
-                AxisConfig::new(Axis::DPadX, -1, 1),
-                AxisConfig::new(Axis::DPadY, -1, 1),
+                AxisConfig::new(Axis::LeftStickX, -32768, 32767),
+                AxisConfig::new(Axis::LeftStickY, -32768, 32767),
+                AxisConfig::new(Axis::RightStickX, -32768, 32767),
+                AxisConfig::new(Axis::RightStickY, -32768, 32767),
+                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
             ],
         }
     }
@@ -166,6 +174,10 @@ impl ControllerTemplates {
                 Button::Guide,        // Home
                 Button::LeftStick,    // Left stick click
                 Button::RightStick,   // Right stick click
+                Button::DPadUp,
+                Button::DPadDown,
+                Button::DPadLeft,
+                Button::DPadRight,
                 Button::Custom(317),  // Capture button
             ],
             axes: vec![
@@ -173,8 +185,6 @@ impl ControllerTemplates {
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::DPadX, -1, 1),
-                AxisConfig::new(Axis::DPadY, -1, 1),
             ],
         }
     }
@@ -238,8 +248,8 @@ impl ControllerTemplates {
                 AxisConfig::new(Axis::Custom(4), -32768, 32767), // Left pad Y
                 AxisConfig::new(Axis::Custom(5), -32768, 32767), // Right pad X
                 AxisConfig::new(Axis::Custom(6), -32768, 32767), // Right pad Y
-                AxisConfig::new(Axis::LeftTrigger, 0, 255),
-                AxisConfig::new(Axis::RightTrigger, 0, 255),
+                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
             ],
         }
     }
