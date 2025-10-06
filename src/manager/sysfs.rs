@@ -223,7 +223,7 @@ impl SysfsGenerator {
         let mut bits = [0u64; 12]; // 768 bits / 64 = 12 u64s
 
         for button in &config.buttons {
-            let code = button.to_code() as usize;
+            let code = button.to_ev_code() as usize;
             let index = code / 64;
             let bit = code % 64;
             if index < bits.len() {
@@ -255,7 +255,7 @@ impl SysfsGenerator {
         let mut bits = [0u64; 1]; // 64 bits for now (covers standard axes)
 
         for axis_config in &config.axes {
-            let code = axis_config.axis.to_code() as usize;
+            let code = axis_config.axis.to_ev_code() as usize;
             if code < 64 {
                 bits[0] |= 1u64 << code;
             }

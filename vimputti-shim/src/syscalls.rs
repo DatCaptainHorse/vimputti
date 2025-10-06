@@ -134,7 +134,8 @@ pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaLi
 
     if let Some(info) = device_info {
         if info.is_joystick {
-            return unsafe { handle_joystick_ioctl(fd, request, args, &info) };
+            return -1;
+            //return unsafe { handle_joystick_ioctl(fd, request, args, &info) };
         }
         return unsafe { handle_evdev_ioctl(fd, request, args, &info) };
     }
@@ -208,7 +209,7 @@ unsafe fn handle_joystick_ioctl(
                 // Build axis map from device config
                 let mut axis_map = Vec::new();
                 for axis_config in &device_info.config.axes {
-                    axis_map.push(axis_config.axis.to_code() as u8);
+                    //axis_map.push(axis_config.axis.to_js_code() as u8);
                 }
 
                 let copy_len = std::cmp::min(axis_map.len(), len);
@@ -231,7 +232,7 @@ unsafe fn handle_joystick_ioctl(
                 // Build button map from device config
                 let mut button_map = Vec::new();
                 for button in &device_info.config.buttons {
-                    button_map.push(button.to_code());
+                    //button_map.push(button.to_code());
                 }
 
                 let copy_len = std::cmp::min(button_map.len(), len);
@@ -473,7 +474,7 @@ unsafe fn handle_evdev_ioctl(
                         .config
                         .axes
                         .iter()
-                        .find(|a| a.axis.to_code() as u32 == axis)
+                        .find(|a| a.axis.to_ev_code() as u32 == axis)
                         .map(|a| InputAbsinfo {
                             value: 0,
                             minimum: a.min,

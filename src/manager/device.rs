@@ -151,12 +151,12 @@ impl VirtualDevice {
                 InputEvent::Button { button, pressed } => {
                     linux_events.push(LinuxInputEvent::new(
                         EV_KEY,
-                        button.to_code(),
+                        button.to_ev_code(),
                         if *pressed { 1 } else { 0 },
                     ));
                 }
                 InputEvent::Axis { axis, value } => {
-                    linux_events.push(LinuxInputEvent::new(EV_ABS, axis.to_code(), *value));
+                    linux_events.push(LinuxInputEvent::new(EV_ABS, axis.to_ev_code(), *value));
                 }
                 InputEvent::Raw {
                     event_type,
@@ -208,15 +208,6 @@ impl VirtualDevice {
             return Ok(());
         }
 
-        // Joystick event structure
-        #[repr(C, packed)]
-        struct JsEvent {
-            time: u32,  // event timestamp in milliseconds
-            value: i16, // value
-            type_: u8,  // event type
-            number: u8, // axis/button number
-        }
-
         const JS_EVENT_BUTTON: u8 = 0x01;
         const JS_EVENT_AXIS: u8 = 0x02;
 
@@ -228,23 +219,21 @@ impl VirtualDevice {
         for event in events {
             match event {
                 InputEvent::Button { button, pressed } => {
-                    let code = button.to_code();
-                    js_events.push(JsEvent {
+                    js_events.push(LinuxJsEvent {
                         time,
                         value: if *pressed { 1 } else { 0 },
                         type_: JS_EVENT_BUTTON,
-                        number: code as u8,
+                        number: button.to_ev_code() as u8, //to_js_code
                     });
                 }
                 InputEvent::Axis { axis, value } => {
-                    let code = axis.to_code();
                     // Normalize value to i16 range
                     let normalized_value = (*value as i16).clamp(i16::MIN, i16::MAX);
-                    js_events.push(JsEvent {
+                    js_events.push(LinuxJsEvent {
                         time,
                         value: normalized_value,
                         type_: JS_EVENT_AXIS,
-                        number: code as u8,
+                        number: axis.to_ev_code() as u8, //to_js_code
                     });
                 }
                 _ => {} // Ignore raw events and sync for joystick

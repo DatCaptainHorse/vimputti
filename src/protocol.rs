@@ -111,7 +111,7 @@ pub enum Button {
 
 impl Button {
     /// Convert button to Linux input event code
-    pub fn to_code(self) -> u16 {
+    pub fn to_ev_code(self) -> u16 {
         match self {
             Button::A => 0x130,                 // BTN_SOUTH
             Button::B => 0x131,                 // BTN_EAST
@@ -135,7 +135,7 @@ impl Button {
     }
 
     /// Convert from Linux input event code to Button
-    pub fn from_code(code: u16) -> Option<Self> {
+    pub fn from_ev_code(code: u16) -> Option<Self> {
         match code {
             0x130 => Some(Button::A),
             0x131 => Some(Button::B),
@@ -177,7 +177,7 @@ pub enum Axis {
 
 impl Axis {
     /// Convert axis to Linux input event code
-    pub fn to_code(self) -> u16 {
+    pub fn to_ev_code(self) -> u16 {
         match self {
             Axis::LeftStickX => 0x00,        // ABS_X
             Axis::LeftStickY => 0x01,        // ABS_Y
@@ -194,7 +194,7 @@ impl Axis {
     }
 
     /// Convert from Linux input event code to Axis
-    pub fn from_code(code: u16) -> Option<Self> {
+    pub fn from_ev_code(code: u16) -> Option<Self> {
         match code {
             0x00 => Some(Axis::LeftStickX),
             0x01 => Some(Axis::LeftStickY),
@@ -269,6 +269,15 @@ pub struct LinuxInputEvent {
     pub event_type: u16,
     pub code: u16,
     pub value: i32,
+}
+
+/// Linux joystick input event structure (for joystick nodes)
+#[repr(C, packed)]
+pub struct LinuxJsEvent {
+    pub time: u32,
+    pub value: i16,
+    pub type_: u8,
+    pub number: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
