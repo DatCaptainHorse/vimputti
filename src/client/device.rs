@@ -66,16 +66,6 @@ impl VirtualController {
         self.button(button, false);
     }
 
-    /// Convenience method to set multiple buttons state as i32 bitmask
-    /// The `count` parameter specifies how many buttons to consider from the bitmask.
-    pub fn buttons(&self, buttons: i32, count: u8) {
-        for i in 0..count {
-            let button = Button::from_index(i);
-            let pressed = (buttons & (1 << i)) != 0;
-            self.button(button, pressed);
-        }
-    }
-
     /// Move an axis to a specific value
     pub fn axis(&self, axis: Axis, value: i32) {
         self.batch_manager

@@ -12,32 +12,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Connected to vimputti manager");
 
     // Create a simple Xbox-style controller configuration
-    let config = DeviceConfig {
-        name: "Virtual Xbox Controller".to_string(),
-        vendor_id: 0x045e,  // Microsoft
-        product_id: 0x028e, // Xbox 360 Controller
-        version: 0x0110,
-        bustype: BusType::Usb,
-        buttons: vec![
-            Button::A,
-            Button::B,
-            Button::X,
-            Button::Y,
-            Button::LeftBumper,
-            Button::RightBumper,
-            Button::Start,
-            Button::Select,
-            Button::Guide,
-        ],
-        axes: vec![
-            AxisConfig::new(Axis::LeftStickX, -32768, 32767),
-            AxisConfig::new(Axis::LeftStickY, -32768, 32767),
-            AxisConfig::new(Axis::RightStickX, -32768, 32767),
-            AxisConfig::new(Axis::RightStickY, -32768, 32767),
-            AxisConfig::new(Axis::LeftTrigger, 0, 255),
-            AxisConfig::new(Axis::RightTrigger, 0, 255),
-        ],
-    };
+    let config = ControllerTemplates::xbox360();
 
     // Create the virtual device
     let device = client.create_device(config).await?;

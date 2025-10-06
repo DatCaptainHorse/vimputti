@@ -85,10 +85,10 @@ pub enum Button {
     Y,
 
     // Shoulder buttons
-    LeftBumper,
-    RightBumper,
-    LeftTrigger,
-    RightTrigger,
+    UpperLeftBumper,
+    UpperRightBumper,
+    LowerLeftTrigger,
+    LowerRightTrigger,
 
     // Stick buttons
     LeftStick,
@@ -113,48 +113,48 @@ impl Button {
     /// Convert button to Linux input event code
     pub fn to_code(self) -> u16 {
         match self {
-            Button::A => 304,            // BTN_SOUTH
-            Button::B => 305,            // BTN_EAST
-            Button::X => 307,            // BTN_NORTH
-            Button::Y => 308,            // BTN_WEST
-            Button::LeftBumper => 310,   // BTN_TL
-            Button::RightBumper => 311,  // BTN_TR
-            Button::LeftTrigger => 312,  // BTN_TL2
-            Button::RightTrigger => 313, // BTN_TR2
-            Button::LeftStick => 317,    // BTN_THUMBL
-            Button::RightStick => 318,   // BTN_THUMBR
-            Button::Start => 315,        // BTN_START
-            Button::Select => 314,       // BTN_SELECT
-            Button::Guide => 316,        // BTN_MODE
-            Button::DPadUp => 544,       // BTN_DPAD_UP
-            Button::DPadDown => 545,     // BTN_DPAD_DOWN
-            Button::DPadLeft => 546,     // BTN_DPAD_LEFT
-            Button::DPadRight => 547,    // BTN_DPAD_RIGHT
+            Button::A => 0x130,                 // BTN_SOUTH
+            Button::B => 0x131,                 // BTN_EAST
+            Button::X => 0x133,                 // BTN_NORTH
+            Button::Y => 0x134,                 // BTN_WEST
+            Button::UpperLeftBumper => 0x136,   // BTN_TL
+            Button::UpperRightBumper => 0x137,  // BTN_TR
+            Button::LowerLeftTrigger => 0x138,  // BTN_TL2
+            Button::LowerRightTrigger => 0x139, // BTN_TR2
+            Button::LeftStick => 0x13d,         // BTN_THUMBL
+            Button::RightStick => 0x13e,        // BTN_THUMBR
+            Button::Start => 0x13b,             // BTN_START
+            Button::Select => 0x13a,            // BTN_SELECT
+            Button::Guide => 0x13c,             // BTN_MODE
+            Button::DPadUp => 0x220,            // BTN_DPAD_UP
+            Button::DPadDown => 0x221,          // BTN_DPAD_DOWN
+            Button::DPadLeft => 0x222,          // BTN_DPAD_LEFT
+            Button::DPadRight => 0x223,         // BTN_DPAD_RIGHT
             Button::Custom(code) => code,
         }
     }
 
-    /// Create a button from a zero-based index (for bitmasking)
-    pub fn from_index(index: u8) -> Self {
-        match index {
-            0 => Button::A,
-            1 => Button::B,
-            2 => Button::X,
-            3 => Button::Y,
-            4 => Button::LeftBumper,
-            5 => Button::RightBumper,
-            6 => Button::LeftTrigger,
-            7 => Button::RightTrigger,
-            8 => Button::Select,
-            9 => Button::Start,
-            10 => Button::LeftStick,
-            11 => Button::RightStick,
-            12 => Button::DPadUp,
-            13 => Button::DPadDown,
-            14 => Button::DPadLeft,
-            15 => Button::DPadRight,
-            16 => Button::Guide,
-            _ => Button::Custom(0x100 + index as u16), // Custom buttons start at code 0x100
+    /// Convert from Linux input event code to Button
+    pub fn from_code(code: u16) -> Option<Self> {
+        match code {
+            0x130 => Some(Button::A),
+            0x131 => Some(Button::B),
+            0x133 => Some(Button::X),
+            0x134 => Some(Button::Y),
+            0x136 => Some(Button::UpperLeftBumper),
+            0x137 => Some(Button::UpperRightBumper),
+            0x138 => Some(Button::LowerLeftTrigger),
+            0x139 => Some(Button::LowerRightTrigger),
+            0x13d => Some(Button::LeftStick),
+            0x13e => Some(Button::RightStick),
+            0x13b => Some(Button::Start),
+            0x13a => Some(Button::Select),
+            0x13c => Some(Button::Guide),
+            0x220 => Some(Button::DPadUp),
+            0x221 => Some(Button::DPadDown),
+            0x222 => Some(Button::DPadLeft),
+            0x223 => Some(Button::DPadRight),
+            _ => None,
         }
     }
 }
@@ -166,8 +166,10 @@ pub enum Axis {
     LeftStickY,
     RightStickX,
     RightStickY,
-    LeftTrigger,
-    RightTrigger,
+    UpperLeftBumper,
+    UpperRightBumper,
+    LowerLeftTrigger,
+    LowerRightTrigger,
     DPadX,
     DPadY,
     Custom(u16),
@@ -177,15 +179,34 @@ impl Axis {
     /// Convert axis to Linux input event code
     pub fn to_code(self) -> u16 {
         match self {
-            Axis::LeftStickX => 0,   // ABS_X
-            Axis::LeftStickY => 1,   // ABS_Y
-            Axis::RightStickX => 3,  // ABS_RX
-            Axis::RightStickY => 4,  // ABS_RY
-            Axis::LeftTrigger => 2,  // ABS_Z
-            Axis::RightTrigger => 5, // ABS_RZ
-            Axis::DPadX => 16,       // ABS_HAT0X
-            Axis::DPadY => 17,       // ABS_HAT0Y
+            Axis::LeftStickX => 0x00,        // ABS_X
+            Axis::LeftStickY => 0x01,        // ABS_Y
+            Axis::RightStickX => 0x03,       // ABS_RX
+            Axis::RightStickY => 0x04,       // ABS_RY
+            Axis::UpperLeftBumper => 0x13,   // ABS_HAT1Y
+            Axis::UpperRightBumper => 0x12,  // ABS_HAT1X
+            Axis::LowerLeftTrigger => 0x15,  // ABS_HAT2Y
+            Axis::LowerRightTrigger => 0x14, // ABS_HAT2X
+            Axis::DPadX => 0x10,             // ABS_HAT0X
+            Axis::DPadY => 0x11,             // ABS_HAT0Y
             Axis::Custom(code) => code,
+        }
+    }
+
+    /// Convert from Linux input event code to Axis
+    pub fn from_code(code: u16) -> Option<Self> {
+        match code {
+            0x00 => Some(Axis::LeftStickX),
+            0x01 => Some(Axis::LeftStickY),
+            0x03 => Some(Axis::RightStickX),
+            0x04 => Some(Axis::RightStickY),
+            0x13 => Some(Axis::UpperLeftBumper),
+            0x12 => Some(Axis::UpperRightBumper),
+            0x15 => Some(Axis::LowerLeftTrigger),
+            0x14 => Some(Axis::LowerRightTrigger),
+            0x10 => Some(Axis::DPadX),
+            0x11 => Some(Axis::DPadY),
+            _ => None,
         }
     }
 }

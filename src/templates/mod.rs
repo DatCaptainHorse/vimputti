@@ -17,8 +17,8 @@ impl ControllerTemplates {
                 Button::B,
                 Button::X,
                 Button::Y,
-                Button::LeftBumper,
-                Button::RightBumper,
+                Button::UpperLeftBumper,
+                Button::UpperRightBumper,
                 Button::Select,     // Back
                 Button::Start,      // Start
                 Button::Guide,      // Xbox button
@@ -30,8 +30,8 @@ impl ControllerTemplates {
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
-                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerLeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerRightTrigger, -32768, 32767),
                 AxisConfig::new(Axis::DPadX, -1, 1),
                 AxisConfig::new(Axis::DPadY, -1, 1),
             ],
@@ -51,8 +51,8 @@ impl ControllerTemplates {
                 Button::B,
                 Button::X,
                 Button::Y,
-                Button::LeftBumper,
-                Button::RightBumper,
+                Button::UpperLeftBumper,
+                Button::UpperRightBumper,
                 Button::Select,
                 Button::Start,
                 Button::Guide,
@@ -64,8 +64,8 @@ impl ControllerTemplates {
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
-                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerLeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerRightTrigger, -32768, 32767),
                 AxisConfig::new(Axis::DPadX, -1, 1),
                 AxisConfig::new(Axis::DPadY, -1, 1),
             ],
@@ -81,27 +81,27 @@ impl ControllerTemplates {
             version: 0x8111,
             bustype: BusType::Usb,
             buttons: vec![
-                Button::X,            // Cross (mapped to X)
-                Button::A,            // Circle (mapped to A)
-                Button::B,            // Square (mapped to B)
-                Button::Y,            // Triangle (mapped to Y)
-                Button::LeftBumper,   // L1
-                Button::RightBumper,  // R1
-                Button::LeftTrigger,  // L2
-                Button::RightTrigger, // R2
-                Button::Select,       // Share
-                Button::Start,        // Options
-                Button::Guide,        // PS button
-                Button::LeftStick,    // L3
-                Button::RightStick,   // R3
+                Button::X,                 // Cross (mapped to X)
+                Button::A,                 // Circle (mapped to A)
+                Button::B,                 // Square (mapped to B)
+                Button::Y,                 // Triangle (mapped to Y)
+                Button::UpperLeftBumper,   // L1
+                Button::UpperRightBumper,  // R1
+                Button::LowerLeftTrigger,  // L2
+                Button::LowerRightTrigger, // R2
+                Button::Select,            // Share
+                Button::Start,             // Options
+                Button::Guide,             // PS button
+                Button::LeftStick,         // L3
+                Button::RightStick,        // R3
             ],
             axes: vec![
                 AxisConfig::new(Axis::LeftStickX, -32768, 32767),
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
-                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerLeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerRightTrigger, -32768, 32767),
                 AxisConfig::new(Axis::DPadX, -1, 1),
                 AxisConfig::new(Axis::DPadY, -1, 1),
             ],
@@ -117,27 +117,27 @@ impl ControllerTemplates {
             version: 0x8111,
             bustype: BusType::Usb,
             buttons: vec![
-                Button::X,            // Cross
-                Button::A,            // Circle
-                Button::B,            // Square
-                Button::Y,            // Triangle
-                Button::LeftBumper,   // L1
-                Button::RightBumper,  // R1
-                Button::LeftTrigger,  // L2
-                Button::RightTrigger, // R2
-                Button::Select,       // Create
-                Button::Start,        // Options
-                Button::Guide,        // PS button
-                Button::LeftStick,    // L3
-                Button::RightStick,   // R3
+                Button::X,                 // Cross
+                Button::A,                 // Circle
+                Button::B,                 // Square
+                Button::Y,                 // Triangle
+                Button::UpperLeftBumper,   // L1
+                Button::UpperRightBumper,  // R1
+                Button::LowerLeftTrigger,  // L2
+                Button::LowerRightTrigger, // R2
+                Button::Select,            // Create
+                Button::Start,             // Options
+                Button::Guide,             // PS button
+                Button::LeftStick,         // L3
+                Button::RightStick,        // R3
             ],
             axes: vec![
                 AxisConfig::new(Axis::LeftStickX, -32768, 32767),
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
-                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerLeftTrigger, -32768, 32767),
+                AxisConfig::new(Axis::LowerRightTrigger, -32768, 32767),
                 AxisConfig::new(Axis::DPadX, -1, 1),
                 AxisConfig::new(Axis::DPadY, -1, 1),
             ],
@@ -153,20 +153,20 @@ impl ControllerTemplates {
             version: 0x8111,
             bustype: BusType::Usb,
             buttons: vec![
-                Button::B,            // A (Nintendo)
-                Button::A,            // B (Nintendo)
-                Button::Y,            // X (Nintendo)
-                Button::X,            // Y (Nintendo)
-                Button::LeftBumper,   // L
-                Button::RightBumper,  // R
-                Button::LeftTrigger,  // ZL
-                Button::RightTrigger, // ZR
-                Button::Select,       // Minus
-                Button::Start,        // Plus
-                Button::Guide,        // Home
-                Button::LeftStick,    // Left stick click
-                Button::RightStick,   // Right stick click
-                Button::Custom(317),  // Capture button
+                Button::B,                 // A (Nintendo)
+                Button::A,                 // B (Nintendo)
+                Button::Y,                 // X (Nintendo)
+                Button::X,                 // Y (Nintendo)
+                Button::UpperLeftBumper,   // L
+                Button::UpperRightBumper,  // R
+                Button::LowerLeftTrigger,  // ZL
+                Button::LowerRightTrigger, // ZR
+                Button::Select,            // Minus
+                Button::Start,             // Plus
+                Button::Guide,             // Home
+                Button::LeftStick,         // Left stick click
+                Button::RightStick,        // Right stick click
+                Button::Custom(317),       // Capture button
             ],
             axes: vec![
                 AxisConfig::new(Axis::LeftStickX, -32768, 32767),
@@ -192,8 +192,8 @@ impl ControllerTemplates {
                 Button::B,
                 Button::X,
                 Button::Y,
-                Button::LeftBumper,
-                Button::RightBumper,
+                Button::UpperLeftBumper,
+                Button::UpperRightBumper,
                 Button::Select,
                 Button::Start,
             ],
@@ -202,44 +202,6 @@ impl ControllerTemplates {
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
                 AxisConfig::new(Axis::RightStickY, -32768, 32767),
-            ],
-        }
-    }
-
-    /// Steam Controller
-    pub fn steam_controller() -> DeviceConfig {
-        DeviceConfig {
-            name: "Steam Controller".to_string(),
-            vendor_id: 0x28de,
-            product_id: 0x1142,
-            version: 0x0111,
-            bustype: BusType::Usb,
-            buttons: vec![
-                Button::A,
-                Button::B,
-                Button::X,
-                Button::Y,
-                Button::LeftBumper,
-                Button::RightBumper,
-                Button::LeftTrigger,
-                Button::RightTrigger,
-                Button::Select,
-                Button::Start,
-                Button::Guide,
-                Button::LeftStick,
-                Button::RightStick,
-                Button::Custom(289), // Left pad click
-                Button::Custom(290), // Right pad click
-            ],
-            axes: vec![
-                AxisConfig::new(Axis::LeftStickX, -32768, 32767),
-                AxisConfig::new(Axis::LeftStickY, -32768, 32767),
-                AxisConfig::new(Axis::Custom(3), -32768, 32767), // Left pad X
-                AxisConfig::new(Axis::Custom(4), -32768, 32767), // Left pad Y
-                AxisConfig::new(Axis::Custom(5), -32768, 32767), // Right pad X
-                AxisConfig::new(Axis::Custom(6), -32768, 32767), // Right pad Y
-                AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
-                AxisConfig::new(Axis::RightTrigger, -32768, 32767),
             ],
         }
     }
@@ -336,10 +298,10 @@ impl ControllerBuilder {
     /// Add shoulder buttons (L1, R1, L2, R2)
     pub fn shoulder_buttons(self) -> Self {
         self.buttons([
-            Button::LeftBumper,
-            Button::RightBumper,
-            Button::LeftTrigger,
-            Button::RightTrigger,
+            Button::UpperLeftBumper,
+            Button::UpperRightBumper,
+            Button::LowerLeftTrigger,
+            Button::LowerRightTrigger,
         ])
     }
 
@@ -376,8 +338,8 @@ impl ControllerBuilder {
     /// Add analog triggers
     pub fn analog_triggers(self) -> Self {
         self.axes([
-            AxisConfig::new(Axis::LeftTrigger, 0, 255),
-            AxisConfig::new(Axis::RightTrigger, 0, 255),
+            AxisConfig::new(Axis::LowerLeftTrigger, -32768, 32767),
+            AxisConfig::new(Axis::LowerRightTrigger, -32768, 32767),
         ])
     }
 

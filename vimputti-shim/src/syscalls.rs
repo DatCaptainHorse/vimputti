@@ -67,18 +67,18 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                             }
                             Err(e) => {
                                 warn!("Failed to deserialize device config: {}, using default", e);
-                                create_default_config()
+                                vimputti::templates::ControllerTemplates::xbox360()
                             }
                         },
                         Err(e) => {
                             warn!("Failed to read device config data: {}, using default", e);
-                            create_default_config()
+                            vimputti::templates::ControllerTemplates::xbox360()
                         }
                     }
                 }
                 Err(e) => {
                     warn!("Failed to read config length: {}, using default", e);
-                    create_default_config()
+                    vimputti::templates::ControllerTemplates::xbox360()
                 }
             };
 
@@ -109,88 +109,6 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
             -1
         }
     }
-}
-
-fn create_default_config() -> DeviceConfig {
-    use vimputti::{Axis, AxisConfig, BusType, Button};
-
-    DeviceConfig {
-        name: "Xbox 360 Controller".to_string(),
-        vendor_id: 0x045e,
-        product_id: 0x028e,
-        version: 0x0110,
-        bustype: BusType::Usb,
-        buttons: vec![
-            Button::A,
-            Button::B,
-            Button::X,
-            Button::Y,
-            Button::LeftBumper,
-            Button::RightBumper,
-            Button::Select,
-            Button::Start,
-            Button::Guide,
-            Button::LeftStick,
-            Button::RightStick,
-        ],
-        axes: vec![
-            AxisConfig::new(Axis::LeftStickX, -32768, 32767),
-            AxisConfig::new(Axis::LeftStickY, -32768, 32767),
-            AxisConfig::new(Axis::RightStickX, -32768, 32767),
-            AxisConfig::new(Axis::RightStickY, -32768, 32767),
-            AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
-            AxisConfig::new(Axis::RightTrigger, -32768, 32767),
-            AxisConfig::new(Axis::DPadX, -1, 1),
-            AxisConfig::new(Axis::DPadY, -1, 1),
-        ],
-    }
-}
-
-/// Read device info from sysfs (for proper button/axis counts)
-fn read_device_info_from_sysfs(event_node: &str) -> (u8, u8, String) {
-    let uid = unsafe { libc::getuid() };
-    let base_path =
-        std::env::var("VIMPUTTI_PATH").unwrap_or_else(|_| format!("/run/user/{}/vimputti", uid));
-
-    // Map js0 -> event0
-    let event_num = event_node.trim_start_matches("js");
-    let sysfs_event_node = format!("event{}", event_num);
-
-    let sysfs_base = format!(
-        "{}/sysfs/class/input/{}/device",
-        base_path, sysfs_event_node
-    );
-
-    // Read device name
-    let device_name = std::fs::read_to_string(format!("{}/name", sysfs_base))
-        .unwrap_or_else(|_| "Virtual Controller".to_string())
-        .trim()
-        .to_string();
-
-    // Read capabilities to count buttons and axes
-    let key_caps = std::fs::read_to_string(format!("{}/capabilities/key", sysfs_base))
-        .unwrap_or_else(|_| "0".to_string());
-    let abs_caps = std::fs::read_to_string(format!("{}/capabilities/abs", sysfs_base))
-        .unwrap_or_else(|_| "0".to_string());
-
-    let num_buttons = count_bits_in_hex(&key_caps);
-    let num_axes = count_bits_in_hex(&abs_caps);
-
-    debug!(
-        "Read from sysfs: buttons={}, axes={}, name={}",
-        num_buttons, num_axes, device_name
-    );
-
-    (num_buttons, num_axes, device_name)
-}
-
-/// Count set bits in a hex string (e.g., "3f" = 6 bits)
-fn count_bits_in_hex(hex_str: &str) -> u8 {
-    hex_str
-        .split_whitespace()
-        .filter_map(|s| u64::from_str_radix(s, 16).ok())
-        .map(|n| n.count_ones() as u8)
-        .sum()
 }
 
 /// Check if an FD is one of our virtual devices
@@ -247,7 +165,7 @@ unsafe fn handle_joystick_ioctl(
             let ptr: *mut c_int = unsafe { args.arg() };
             if !ptr.is_null() {
                 unsafe {
-                    *ptr = 0x020100;
+                    *ptr = 0x020100; // Version 2.1.0
                 }
                 debug!("ioctl JSIOCGVERSION: returning 0x020100");
             }
@@ -290,18 +208,7 @@ unsafe fn handle_joystick_ioctl(
                 // Build axis map from device config
                 let mut axis_map = Vec::new();
                 for axis_config in &device_info.config.axes {
-                    let evdev_code = match axis_config.axis {
-                        Axis::LeftStickX => 0,
-                        Axis::LeftStickY => 1,
-                        Axis::LeftTrigger => 2,
-                        Axis::RightStickX => 3,
-                        Axis::RightStickY => 4,
-                        Axis::RightTrigger => 5,
-                        Axis::DPadX => 16,
-                        Axis::DPadY => 17,
-                        Axis::Custom(code) => code as u8,
-                    };
-                    axis_map.push(evdev_code);
+                    axis_map.push(axis_config.axis.to_code() as u8);
                 }
 
                 let copy_len = std::cmp::min(axis_map.len(), len);
@@ -566,7 +473,7 @@ unsafe fn handle_evdev_ioctl(
                         .config
                         .axes
                         .iter()
-                        .find(|a| axis_to_evdev_code(&a.axis) == axis)
+                        .find(|a| a.axis.to_code() as u32 == axis)
                         .map(|a| InputAbsinfo {
                             value: 0,
                             minimum: a.min,
@@ -608,19 +515,5 @@ unsafe fn handle_evdev_ioctl(
 pub fn close_virtual_device(fd: RawFd) {
     if let Some(info) = VIRTUAL_DEVICE_FDS.lock().unwrap().remove(&fd) {
         debug!("Closed virtual device: fd={}, node={}", fd, info.event_node);
-    }
-}
-
-fn axis_to_evdev_code(axis: &Axis) -> u32 {
-    match axis {
-        Axis::LeftStickX => 0,   // ABS_X
-        Axis::LeftStickY => 1,   // ABS_Y
-        Axis::LeftTrigger => 2,  // ABS_Z
-        Axis::RightStickX => 3,  // ABS_RX
-        Axis::RightStickY => 4,  // ABS_RY
-        Axis::RightTrigger => 5, // ABS_RZ
-        Axis::DPadX => 16,       // ABS_HAT0X
-        Axis::DPadY => 17,       // ABS_HAT0Y
-        Axis::Custom(code) => *code as u32,
     }
 }
