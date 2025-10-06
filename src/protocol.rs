@@ -166,8 +166,6 @@ pub enum Axis {
     LeftStickY,
     RightStickX,
     RightStickY,
-    UpperLeftBumper,
-    UpperRightBumper,
     LowerLeftTrigger,
     LowerRightTrigger,
     DPadX,
@@ -183,10 +181,8 @@ impl Axis {
             Axis::LeftStickY => 0x01,        // ABS_Y
             Axis::RightStickX => 0x03,       // ABS_RX
             Axis::RightStickY => 0x04,       // ABS_RY
-            Axis::UpperLeftBumper => 0x05,   // ABS_Z
-            Axis::UpperRightBumper => 0x06,  // ABS_RZ
-            Axis::LowerLeftTrigger => 0x18,  // ABS_THROTTLE
-            Axis::LowerRightTrigger => 0x19, // ABS_RUDDER
+            Axis::LowerLeftTrigger => 0x02,  // ABS_Z
+            Axis::LowerRightTrigger => 0x05, // ABS_RZ
             Axis::DPadX => 0x10,             // ABS_HAT0X
             Axis::DPadY => 0x11,             // ABS_HAT0Y
             Axis::Custom(code) => code,
@@ -200,10 +196,8 @@ impl Axis {
             0x01 => Some(Axis::LeftStickY),
             0x03 => Some(Axis::RightStickX),
             0x04 => Some(Axis::RightStickY),
-            0x05 => Some(Axis::UpperLeftBumper),
-            0x06 => Some(Axis::UpperRightBumper),
-            0x18 => Some(Axis::LowerLeftTrigger),
-            0x19 => Some(Axis::LowerRightTrigger),
+            0x02 => Some(Axis::LowerLeftTrigger),
+            0x05 => Some(Axis::LowerRightTrigger),
             0x10 => Some(Axis::DPadX),
             0x11 => Some(Axis::DPadY),
             _ => None,

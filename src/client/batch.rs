@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::time::{Instant, sleep};
+use tokio::time::Instant;
 use tracing::debug;
 
 /// Manages automatic batching and flushing of input events
@@ -92,8 +92,7 @@ impl BatchManager {
             return Ok(());
         }
 
-        let mut events_to_send = events.drain(..).collect::<Vec<_>>();
-        Self::ensure_sync(&mut events_to_send);
+        let events_to_send = events.drain(..).collect::<Vec<_>>();
         drop(events); // Release lock before sending
 
         // Send flush request and wait for response
@@ -143,8 +142,7 @@ impl BatchManager {
             if should_flush {
                 let mut events = pending_events.lock().await;
                 if !events.is_empty() {
-                    let mut events_to_send = events.drain(..).collect::<Vec<_>>();
-                    Self::ensure_sync(&mut events_to_send);
+                    let events_to_send = events.drain(..).collect::<Vec<_>>();
                     drop(events); // Release lock before sending
 
                     // Send flush request (don't wait for response in auto-flush)
@@ -206,17 +204,6 @@ impl BatchManager {
                 anyhow::bail!("Failed to send input: {}", message)
             }
             _ => anyhow::bail!("Unexpected response to SendInput"),
-        }
-    }
-
-    /// Ensure events list ends with Sync
-    fn ensure_sync(events: &mut Vec<InputEvent>) {
-        if !events.iter().any(|e| matches!(e, InputEvent::Sync)) {
-            events.push(InputEvent::Sync);
-        } else if let Some(last) = events.last() {
-            if !matches!(last, InputEvent::Sync) {
-                events.push(InputEvent::Sync);
-            }
         }
     }
 }
