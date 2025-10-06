@@ -461,8 +461,11 @@ unsafe fn handle_evdev_ioctl(
 
                 // Set bits based on device config
                 match ev_type as u16 {
-                    EV_SYN => unsafe {
-                        *ptr |= 1 << (0 % 8);
+                    0 => unsafe {
+                        if len > 0 {
+                            *ptr = (EV_SYN | EV_KEY | EV_ABS) as u8;
+                        }
+                        debug!("ioctl EVIOCGBIT(0): returning supported event types");
                     },
                     EV_KEY => {
                         for button in &device_info.config.buttons {
