@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod device;
 mod lock;
@@ -149,7 +149,7 @@ impl Manager {
                         }
                     };
 
-                    info!("Received command: {:?}", message.command);
+                    debug!("Received command: {:?}", message.command);
 
                     let response = Self::process_command(
                         message.command,

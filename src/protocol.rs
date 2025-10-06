@@ -210,7 +210,6 @@ impl Axis {
         }
     }
 }
-
 /// Configuration for an axis
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AxisConfig {

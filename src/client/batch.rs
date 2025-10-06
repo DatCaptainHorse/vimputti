@@ -92,7 +92,8 @@ impl BatchManager {
             return Ok(());
         }
 
-        let events_to_send = events.drain(..).collect::<Vec<_>>();
+        let mut events_to_send = events.drain(..).collect::<Vec<_>>();
+        Self::ensure_sync(&mut events_to_send);
         drop(events); // Release lock before sending
 
         // Send flush request and wait for response
@@ -123,8 +124,11 @@ impl BatchManager {
         last_event_time: Arc<Mutex<Option<Instant>>>,
         flush_tx: tokio::sync::mpsc::UnboundedSender<FlushRequest>,
     ) {
+        let mut check_interval = tokio::time::interval(Duration::from_millis(1));
+        check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
-            sleep(Duration::from_micros(10)).await; // Check every 10µs
+            check_interval.tick().await;
 
             let should_flush = {
                 let last_time = last_event_time.lock().await;
@@ -139,7 +143,8 @@ impl BatchManager {
             if should_flush {
                 let mut events = pending_events.lock().await;
                 if !events.is_empty() {
-                    let events_to_send = events.drain(..).collect::<Vec<_>>();
+                    let mut events_to_send = events.drain(..).collect::<Vec<_>>();
+                    Self::ensure_sync(&mut events_to_send);
                     drop(events); // Release lock before sending
 
                     // Send flush request (don't wait for response in auto-flush)
@@ -201,6 +206,13 @@ impl BatchManager {
                 anyhow::bail!("Failed to send input: {}", message)
             }
             _ => anyhow::bail!("Unexpected response to SendInput"),
+        }
+    }
+
+    /// Ensure events list ends with Sync
+    fn ensure_sync(events: &mut Vec<InputEvent>) {
+        if !events.iter().any(|e| matches!(e, InputEvent::Sync)) {
+            events.push(InputEvent::Sync);
         }
     }
 }

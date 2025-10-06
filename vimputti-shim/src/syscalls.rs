@@ -134,8 +134,7 @@ pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaLi
 
     if let Some(info) = device_info {
         if info.is_joystick {
-            return -1;
-            //return unsafe { handle_joystick_ioctl(fd, request, args, &info) };
+            return unsafe { handle_joystick_ioctl(fd, request, args, &info) };
         }
         return unsafe { handle_evdev_ioctl(fd, request, args, &info) };
     }
@@ -207,9 +206,10 @@ unsafe fn handle_joystick_ioctl(
 
             if !ptr.is_null() && len > 0 {
                 // Build axis map from device config
+                // Map joystick axis number (index) to evdev axis code
                 let mut axis_map = Vec::new();
                 for axis_config in &device_info.config.axes {
-                    //axis_map.push(axis_config.axis.to_js_code() as u8);
+                    axis_map.push(axis_config.axis.to_ev_code() as u8);
                 }
 
                 let copy_len = std::cmp::min(axis_map.len(), len);
@@ -230,9 +230,10 @@ unsafe fn handle_joystick_ioctl(
 
             if !ptr.is_null() && len > 0 {
                 // Build button map from device config
+                // Map joystick button number (index) to evdev button code
                 let mut button_map = Vec::new();
                 for button in &device_info.config.buttons {
-                    //button_map.push(button.to_code());
+                    button_map.push(button.to_ev_code());
                 }
 
                 let copy_len = std::cmp::min(button_map.len(), len);
@@ -276,22 +277,6 @@ unsafe fn handle_joystick_ioctl(
         }
     }
 }
-
-/* Linux input EV reference:
-#define EVIOCGNAME(len)		_IOC(_IOC_READ, 'E', 0x06, len)		/* get device name */
-#define EVIOCGPHYS(len)		_IOC(_IOC_READ, 'E', 0x07, len)		/* get physical location */
-#define EVIOCGUNIQ(len)		_IOC(_IOC_READ, 'E', 0x08, len)		/* get unique identifier */
-#define EVIOCGPROP(len)		_IOC(_IOC_READ, 'E', 0x09, len)		/* get device properties */
-
-#define EVIOCGKEY(len)		_IOC(_IOC_READ, 'E', 0x18, len)		/* get global key state */
-#define EVIOCGLED(len)		_IOC(_IOC_READ, 'E', 0x19, len)		/* get all LEDs */
-#define EVIOCGSND(len)		_IOC(_IOC_READ, 'E', 0x1a, len)		/* get all sounds status */
-#define EVIOCGSW(len)		_IOC(_IOC_READ, 'E', 0x1b, len)		/* get all switch states */
-
-#define EVIOCGBIT(ev,len)	_IOC(_IOC_READ, 'E', 0x20 + (ev), len)	/* get event bits */
-#define EVIOCGABS(abs)		_IOR('E', 0x40 + (abs), struct input_absinfo)	/* get abs value/limits */
-#define EVIOCSABS(abs)		_IOW('E', 0xc0 + (abs), struct input_absinfo)	/* set abs value/limits */
-*/
 
 /// Handle evdev interface ioctl calls
 unsafe fn handle_evdev_ioctl(
@@ -461,12 +446,14 @@ unsafe fn handle_evdev_ioctl(
 
                 // Set bits based on device config
                 match ev_type as u16 {
-                    0 => unsafe {
+                    0 => {
                         if len > 0 {
-                            *ptr = (EV_SYN | EV_KEY | EV_ABS) as u8;
+                            unsafe {
+                                *ptr = 0b00001011;
+                            }
                         }
                         debug!("ioctl EVIOCGBIT(0): returning supported event types");
-                    },
+                    }
                     EV_KEY => {
                         for button in &device_info.config.buttons {
                             let code = button.to_ev_code() as usize;

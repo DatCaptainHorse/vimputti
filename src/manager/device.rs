@@ -219,23 +219,30 @@ impl VirtualDevice {
         for event in events {
             match event {
                 InputEvent::Button { button, pressed } => {
-                    js_events.push(LinuxJsEvent {
-                        time,
-                        value: if *pressed { 1 } else { 0 },
-                        type_: JS_EVENT_BUTTON,
-                        number: button.to_ev_code() as u8, //to_js_code
-                    });
+                    // Find button index in config
+                    if let Some(button_idx) = self.config.buttons.iter().position(|b| b == button) {
+                        js_events.push(LinuxJsEvent {
+                            time,
+                            value: if *pressed { 1 } else { 0 },
+                            type_: JS_EVENT_BUTTON,
+                            number: button_idx as u8,
+                        });
+                    }
                 }
                 InputEvent::Axis { axis, value } => {
-                    // Normalize value to i16 range
-                    let normalized_value = (*value as i16).clamp(i16::MIN, i16::MAX);
-                    js_events.push(LinuxJsEvent {
-                        time,
-                        value: normalized_value,
-                        type_: JS_EVENT_AXIS,
-                        number: axis.to_ev_code() as u8, //to_js_code
-                    });
+                    if let Some(axis_idx) = self.config.axes.iter().position(|a| a.axis == *axis) {
+                        // Clamp the i32 value to i16 range BEFORE casting
+                        let clamped_value = value.clamp(&(i16::MIN as i32), &(i16::MAX as i32));
+                        let normalized_value = *clamped_value as i16;
+                        js_events.push(LinuxJsEvent {
+                            time,
+                            value: normalized_value,
+                            type_: JS_EVENT_AXIS,
+                            number: axis_idx as u8,
+                        });
+                    }
                 }
+
                 _ => {} // Ignore raw events and sync for joystick
             }
         }

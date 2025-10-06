@@ -25,7 +25,7 @@ pub struct VirtualController {
 impl VirtualController {
     pub(crate) fn new(client: Arc<ClientInner>, device_id: DeviceId, event_node: String) -> Self {
         let batch_manager =
-            BatchManager::new(Arc::clone(&client), device_id, Duration::from_micros(100));
+            BatchManager::new(Arc::clone(&client), device_id, Duration::from_millis(1));
 
         Self {
             client,
@@ -79,6 +79,11 @@ impl VirtualController {
             code,
             value,
         });
+    }
+
+    /// Sends a sync (SYN_REPORT) event
+    pub fn sync(&self) {
+        self.batch_manager.queue_event(InputEvent::Sync);
     }
 
     /// Manually flush all pending events immediately
