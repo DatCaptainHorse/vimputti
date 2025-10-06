@@ -213,6 +213,10 @@ impl BatchManager {
     fn ensure_sync(events: &mut Vec<InputEvent>) {
         if !events.iter().any(|e| matches!(e, InputEvent::Sync)) {
             events.push(InputEvent::Sync);
+        } else if let Some(last) = events.last() {
+            if !matches!(last, InputEvent::Sync) {
+                events.push(InputEvent::Sync);
+            }
         }
     }
 }
