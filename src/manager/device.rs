@@ -290,13 +290,18 @@ impl VirtualDevice {
             Button::Y => 3,
             Button::LeftBumper => 4,
             Button::RightBumper => 5,
-            Button::Select => 6,
-            Button::Start => 7,
-            Button::Guide => 8,
-            Button::LeftStick => 9,
-            Button::RightStick => 10,
+            Button::LeftTrigger => 6,
+            Button::RightTrigger => 7,
+            Button::Select => 8,
+            Button::Start => 9,
+            Button::Guide => 10,
+            Button::LeftStick => 11,
+            Button::RightStick => 12,
+            Button::DPadUp => 13,
+            Button::DPadDown => 14,
+            Button::DPadLeft => 15,
+            Button::DPadRight => 16,
             Button::Custom(code) => (code % 256) as u8,
-            _ => 0,
         }
     }
 
@@ -309,8 +314,9 @@ impl VirtualDevice {
             Axis::RightStickY => 3,
             Axis::LeftTrigger => 4,
             Axis::RightTrigger => 5,
+            Axis::DPadX => 6,
+            Axis::DPadY => 7,
             Axis::Custom(code) => (code % 256) as u8,
-            _ => 0,
         }
     }
 }

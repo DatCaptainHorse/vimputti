@@ -287,22 +287,31 @@ unsafe fn handle_joystick_ioctl(
             let len = ((request >> 16) & 0x3FFF) as usize;
 
             if !ptr.is_null() && len > 0 {
-                // Axis mapping: joystick axis number -> Linux ABS_* code
-                let axis_map: [u8; 8] = [
-                    0,  // Axis 0: ABS_X (LeftStickX)
-                    1,  // Axis 1: ABS_Y (LeftStickY)
-                    3,  // Axis 2: ABS_RX (RightStickX)
-                    4,  // Axis 3: ABS_RY (RightStickY)
-                    2,  // Axis 4: ABS_Z (LeftTrigger)
-                    5,  // Axis 5: ABS_RZ (RightTrigger)
-                    16, // Axis 6: ABS_HAT0X (DPadX)
-                    17, // Axis 7: ABS_HAT0Y (DPadY)
-                ];
+                // Build axis map from device config
+                let mut axis_map = Vec::new();
+                for axis_config in &device_info.config.axes {
+                    let evdev_code = match axis_config.axis {
+                        Axis::LeftStickX => 0,
+                        Axis::LeftStickY => 1,
+                        Axis::LeftTrigger => 2,
+                        Axis::RightStickX => 3,
+                        Axis::RightStickY => 4,
+                        Axis::RightTrigger => 5,
+                        Axis::DPadX => 16,
+                        Axis::DPadY => 17,
+                        Axis::Custom(code) => code as u8,
+                    };
+                    axis_map.push(evdev_code);
+                }
+
                 let copy_len = std::cmp::min(axis_map.len(), len);
                 unsafe {
                     std::ptr::copy_nonoverlapping(axis_map.as_ptr(), ptr, copy_len);
                 }
-                debug!("ioctl JSIOCGAXMAP: returning axis map");
+                debug!(
+                    "ioctl JSIOCGAXMAP: returning axis map with {} axes",
+                    axis_map.len()
+                );
             }
             0
         }
@@ -312,28 +321,20 @@ unsafe fn handle_joystick_ioctl(
             let len = ((request >> 16) & 0x3FFF) as usize / 2;
 
             if !ptr.is_null() && len > 0 {
-                let button_map: [u16; 15] = [
-                    304, // Button 0: BTN_SOUTH (A)
-                    305, // Button 1: BTN_EAST (B)
-                    307, // Button 2: BTN_NORTH (X)
-                    308, // Button 3: BTN_WEST (Y)
-                    310, // Button 4: BTN_TL (LeftBumper)
-                    311, // Button 5: BTN_TR (RightBumper)
-                    312, // Button 6: BTN_TL2 (LeftTrigger button)
-                    313, // Button 7: BTN_TR2 (RightTrigger button)
-                    314, // Button 8: BTN_SELECT
-                    315, // Button 9: BTN_START
-                    316, // Button 10: BTN_MODE (Guide)
-                    317, // Button 11: BTN_THUMBL (LeftStick)
-                    318, // Button 12: BTN_THUMBR (RightStick)
-                    544, // Button 13: BTN_DPAD_UP
-                    545, // Button 14: BTN_DPAD_DOWN
-                ];
+                // Build button map from device config
+                let mut button_map = Vec::new();
+                for button in &device_info.config.buttons {
+                    button_map.push(button.to_code());
+                }
+
                 let copy_len = std::cmp::min(button_map.len(), len);
                 unsafe {
                     std::ptr::copy_nonoverlapping(button_map.as_ptr(), ptr, copy_len);
                 }
-                debug!("ioctl JSIOCGBTNMAP: returning button map");
+                debug!(
+                    "ioctl JSIOCGBTNMAP: returning button map with {} buttons",
+                    button_map.len()
+                );
             }
             0
         }

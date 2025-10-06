@@ -99,7 +99,7 @@ impl ControllerTemplates {
                 AxisConfig::new(Axis::LeftStickX, -32768, 32767),
                 AxisConfig::new(Axis::LeftStickY, -32768, 32767),
                 AxisConfig::new(Axis::RightStickX, -32768, 32767),
-                AxisConfig::new(Axis::RightStickY, -32768, 327675),
+                AxisConfig::new(Axis::RightStickY, -32768, 32767),
                 AxisConfig::new(Axis::LeftTrigger, -32768, 32767),
                 AxisConfig::new(Axis::RightTrigger, -32768, 32767),
                 AxisConfig::new(Axis::DPadX, -1, 1),
