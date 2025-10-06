@@ -302,10 +302,6 @@ unsafe fn handle_evdev_ioctl(
 ) -> c_int {
     const EVIOCGVERSION: c_uint = 0x80044501;
     const EVIOCGID: c_uint = 0x80084502;
-    const EVIOCGNAME: c_uint = 0x81004506;
-    const EVIOCGPHYS: c_uint = 0x81004507;
-    const EVIOCGUNIQ: c_uint = 0x81004508;
-    const EVIOCGPROP: c_uint = 0x81004509;
 
     // evdev ioctl request number ranges
     const EVIOCG_TYPE_MASK: u32 = 0xFF;
@@ -376,17 +372,16 @@ unsafe fn handle_evdev_ioctl(
             0
         }
 
-        EVIOCGNAME => {
+        // EVIOCGNAME - get device name
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x06 => {
             let ptr: *mut u8 = unsafe { args.arg() };
-            let len = ((request >> 16) & 0x1FFF) as usize;
+            let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
                 let name_bytes = device_info.device_name().as_bytes();
                 let copy_len = std::cmp::min(name_bytes.len(), len - 1);
                 unsafe {
                     std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr, copy_len);
-                }
-                unsafe {
                     *ptr.add(copy_len) = 0;
                 }
                 debug!(
@@ -399,9 +394,10 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        EVIOCGPHYS => {
+        // EVIOCGPHYS - get physical location
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x07 => {
             let ptr: *mut u8 = unsafe { args.arg() };
-            let len = ((request >> 16) & 0x1FFF) as usize;
+            let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
                 let phys = b"vimputti-virtual\0";
@@ -416,9 +412,10 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        EVIOCGUNIQ => {
+        // EVIOCGUNIQ - get unique identifier
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x08 => {
             let ptr: *mut u8 = unsafe { args.arg() };
-            let len = ((request >> 16) & 0x1FFF) as usize;
+            let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
                 unsafe {
@@ -431,9 +428,10 @@ unsafe fn handle_evdev_ioctl(
             }
         }
 
-        EVIOCGPROP => {
+        // EVIOCGPROP - get device properties
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x09 => {
             let ptr: *mut u8 = unsafe { args.arg() };
-            let len = ((request >> 16) & 0x1FFF) as usize;
+            let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
                 unsafe {
@@ -473,6 +471,9 @@ unsafe fn handle_evdev_ioctl(
                                 *ptr.add(code / 8) |= 1 << (code % 8);
                             }
                         }
+                    }
+                    EV_REL => {
+                        // No relative axes in our virtual devices..
                     }
                     EV_ABS => {
                         for axis in &device_info.config.axes {
