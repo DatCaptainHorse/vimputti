@@ -1,7 +1,6 @@
 use crate::protocol::*;
 use anyhow::Result;
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
@@ -61,13 +60,19 @@ impl UdevBroadcaster {
 
         loop {
             match listener.accept().await {
-                Ok((stream, _)) => {
-                    info!("Udev monitor connected");
+                Ok((stream, addr)) => {
+                    info!("udev monitor connected from {:?}", addr);
+
+                    // Check if socket is actually connected
+                    if let Ok(peer) = stream.peer_addr() {
+                        info!("Peer address: {:?}", peer);
+                    }
+
                     let mut event_rx = event_tx.subscribe();
 
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_monitor(stream, &mut event_rx).await {
-                            debug!("Udev monitor disconnected: {}", e);
+                            debug!("udev monitor disconnected: {}", e);
                         }
                     });
                 }
@@ -83,19 +88,70 @@ impl UdevBroadcaster {
         mut stream: UnixStream,
         event_rx: &mut broadcast::Receiver<UdevEvent>,
     ) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        let mut pending_messages: Vec<String> = Vec::new();
+
         loop {
-            match event_rx.recv().await {
-                Ok(event) => {
-                    let message = Self::format_udev_message(&event);
-                    if let Err(e) = stream.write_all(message.as_bytes()).await {
-                        return Err(e.into());
+            tokio::select! {
+                // Receive new events from broadcast
+                event_result = event_rx.recv() => {
+                    match event_result {
+                        Ok(event) => {
+                            let message = Self::format_udev_message(&event);
+                            debug!("Queued udev event ({} bytes)", message.len());
+                            pending_messages.push(message);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            debug!("Udev monitor lagged, skipped {} events", skipped);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(anyhow::anyhow!("Event channel closed"));
+                        }
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    debug!("Udev monitor lagged, skipped {} events", skipped);
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(anyhow::anyhow!("Event channel closed"));
+
+                // Try to write pending messages when socket is writable
+                _ = stream.writable(), if !pending_messages.is_empty() => {
+                    // Try to write all pending messages
+                    let mut written_count = 0;
+
+                    for message in &pending_messages {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_millis(10),
+                            stream.write_all(message.as_bytes())
+                        ).await {
+                            Ok(Ok(())) => {
+                                written_count += 1;
+                            }
+                            Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                // Socket buffer full, try again later
+                                break;
+                            }
+                            Ok(Err(e)) => {
+                                debug!("Udev write error: {}", e);
+                                return Err(e.into());
+                            }
+                            Err(_) => {
+                                // Timeout, socket might be blocked
+                                break;
+                            }
+                        }
+                    }
+
+                    // Remove written messages
+                    pending_messages.drain(..written_count);
+
+                    if written_count > 0 {
+                        debug!("Sent {} udev events", written_count);
+                        let _ = stream.flush().await;
+                    }
+
+                    // Drop connection if queue grows too large (client not reading)
+                    if pending_messages.len() > 50 {
+                        debug!("Udev monitor queue overflow, dropping connection");
+                        return Err(anyhow::anyhow!("Queue overflow"));
+                    }
                 }
             }
         }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, trace};
 
 pub struct VirtualDevice {
     pub id: DeviceId,
@@ -18,7 +18,6 @@ pub struct VirtualDevice {
     clients: Arc<Mutex<Vec<UnixStream>>>,
     joystick_clients: Arc<Mutex<Vec<UnixStream>>>,
 }
-
 impl VirtualDevice {
     /// Create a new virtual device
     pub async fn create(
@@ -142,33 +141,14 @@ impl VirtualDevice {
 
     /// Send evdev events
     async fn send_evdev_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
-        let mut linux_events = Vec::new();
         let mut has_sync = false;
+        let mut linux_events: Vec<LinuxInputEvent> =
+            events.iter().map(|e| e.to_linux_input_event()).collect();
 
-        // Convert high-level events to Linux input events
-        for event in events {
-            match event {
-                InputEvent::Button { button, pressed } => {
-                    linux_events.push(LinuxInputEvent::new(
-                        EV_KEY,
-                        button.to_ev_code(),
-                        if *pressed { 1 } else { 0 },
-                    ));
-                }
-                InputEvent::Axis { axis, value } => {
-                    linux_events.push(LinuxInputEvent::new(EV_ABS, axis.to_ev_code(), *value));
-                }
-                InputEvent::Raw {
-                    event_type,
-                    code,
-                    value,
-                } => {
-                    linux_events.push(LinuxInputEvent::new(*event_type, *code, *value));
-                }
-                InputEvent::Sync => {
-                    has_sync = true;
-                    linux_events.push(LinuxInputEvent::new(EV_SYN, SYN_REPORT, 0));
-                }
+        for event in &linux_events {
+            if event.event_type == EV_SYN && event.code == SYN_REPORT {
+                has_sync = true;
+                break;
             }
         }
 
@@ -188,13 +168,29 @@ impl VirtualDevice {
         let mut disconnected = Vec::new();
 
         for (idx, client) in clients.iter_mut().enumerate() {
-            if let Err(e) = client.write_all(&data).await {
-                error!("Failed to write to evdev client: {}", e);
-                disconnected.push(idx);
+            // USE TIMEOUT! Don't block forever
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(10), // 10ms max
+                client.write_all(&data),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    // Success
+                }
+                Ok(Err(e)) => {
+                    trace!("Failed to write to evdev client {}: {}", idx, e);
+                    disconnected.push(idx);
+                }
+                Err(_) => {
+                    // Timeout - client not reading fast enough, drop it
+                    trace!("Evdev client {} timeout - not reading, dropping", idx);
+                    //disconnected.push(idx);
+                }
             }
         }
 
-        // Remove disconnected clients (in reverse order to maintain indices)
+        // Remove disconnected/slow clients (in reverse order)
         for idx in disconnected.iter().rev() {
             clients.remove(*idx);
         }
@@ -261,13 +257,27 @@ impl VirtualDevice {
         let mut disconnected = Vec::new();
 
         for (idx, client) in clients.iter_mut().enumerate() {
-            if let Err(e) = client.write_all(&data).await {
-                error!("Failed to write to joystick client: {}", e);
-                disconnected.push(idx);
+            // USE TIMEOUT HERE TOO
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                client.write_all(&data),
+            )
+            .await
+            {
+                Ok(Ok(())) => {
+                    // Success
+                }
+                Ok(Err(e)) => {
+                    trace!("Failed to write to joystick client {}: {}", idx, e);
+                    disconnected.push(idx);
+                }
+                Err(_) => {
+                    trace!("Joystick client {} timeout - not reading, dropping", idx);
+                    //disconnected.push(idx);
+                }
             }
         }
 
-        // Remove disconnected clients
         for idx in disconnected.iter().rev() {
             clients.remove(*idx);
         }
@@ -275,7 +285,6 @@ impl VirtualDevice {
         Ok(())
     }
 }
-
 impl Drop for VirtualDevice {
     fn drop(&mut self) {
         // Clean up socket file

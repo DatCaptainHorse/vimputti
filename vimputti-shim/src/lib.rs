@@ -1,12 +1,11 @@
 #![feature(c_variadic)]
 
 use lazy_static::lazy_static;
-use libc::{c_char, c_int, c_uint};
+use libc::{c_char, c_int, c_uint, c_void};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_long;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::debug;
 
 mod libudev;
 mod path_redirect;
@@ -17,11 +16,12 @@ use path_redirect::PathRedirector;
 // Global state
 lazy_static! {
     static ref PATH_REDIRECTOR: PathRedirector = PathRedirector::new();
-    static ref ORIGINAL_FUNCTIONS: Mutex<OriginalFunctions> = Mutex::new(OriginalFunctions::new());
+    static ref ORIGINAL_FUNCTIONS: OriginalFunctions = OriginalFunctions::new();
 }
 
 // Store original function pointers
 struct OriginalFunctions {
+    getuid: Option<unsafe extern "C" fn() -> libc::uid_t>,
     open: Option<unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int>,
     open64: Option<unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int>,
     openat: Option<unsafe extern "C" fn(c_int, *const c_char, c_int, ...) -> c_int>,
@@ -51,13 +51,30 @@ struct OriginalFunctions {
             >,
         ) -> c_int,
     >,
+    makedev: Option<unsafe extern "C" fn(c_uint, c_uint) -> libc::dev_t>,
     ioctl: Option<unsafe extern "C" fn(c_int, c_long, ...) -> c_int>,
+    read: Option<unsafe extern "C" fn(c_int, *mut c_void, libc::size_t) -> libc::ssize_t>,
+    write: Option<unsafe extern "C" fn(c_int, *const c_void, libc::size_t) -> libc::ssize_t>,
+    poll: Option<unsafe extern "C" fn(*mut libc::pollfd, libc::nfds_t, c_int) -> c_int>,
+    epoll_wait: Option<unsafe extern "C" fn(c_int, *mut libc::epoll_event, c_int, c_int) -> c_int>,
+    epoll_pwait: Option<
+        unsafe extern "C" fn(
+            c_int,
+            *mut libc::epoll_event,
+            c_int,
+            c_int,
+            *const libc::sigset_t,
+        ) -> c_int,
+    >,
+    inotify_init: Option<unsafe extern "C" fn() -> c_int>,
+    inotify_init1: Option<unsafe extern "C" fn(c_int) -> c_int>,
+    inotify_add_watch: Option<unsafe extern "C" fn(c_int, *const c_char, u32) -> c_int>,
 }
-
 impl OriginalFunctions {
     fn new() -> Self {
         unsafe {
             Self {
+                getuid: Self::get_original("getuid"),
                 open: Self::get_original("open"),
                 open64: Self::get_original("open64"),
                 openat: Self::get_original("openat"),
@@ -77,7 +94,16 @@ impl OriginalFunctions {
                 fopen64: Self::get_original("fopen64"),
                 opendir: Self::get_original("opendir"),
                 scandir: Self::get_original("scandir"),
+                makedev: Self::get_original("makedev"),
                 ioctl: Self::get_original("ioctl"),
+                read: Self::get_original("read"),
+                write: Self::get_original("write"),
+                poll: Self::get_original("poll"),
+                epoll_wait: Self::get_original("epoll_wait"),
+                epoll_pwait: Self::get_original("epoll_pwait"),
+                inotify_init: Self::get_original("inotify_init"),
+                inotify_init1: Self::get_original("inotify_init1"),
+                inotify_add_watch: Self::get_original("inotify_add_watch"),
             }
         }
     }
@@ -105,15 +131,15 @@ fn init_shim() {
         .with_target(false)
         .init();
 
-    //info!("Vimputti shim loaded!");
-
     // Detect vimputti base path from environment or use default
     let base_path = std::env::var("VIMPUTTI_PATH").unwrap_or_else(|_| {
-        let uid = unsafe { libc::getuid() };
-        format!("/run/user/{}/vimputti", uid)
+        if let Some(orig_getuid) = ORIGINAL_FUNCTIONS.getuid {
+            let uid = unsafe { orig_getuid() };
+            format!("/run/user/{}/vimputti", uid)
+        } else {
+            "/run/user/1000/vimputti".to_string() // Fallback
+        }
     });
-
-    //info!("Vimputti base path: {}", base_path);
 }
 
 // =============================================================================
@@ -132,8 +158,7 @@ pub unsafe extern "C" fn open(pathname: *const c_char, flags: c_int, mut args: .
         Err(_) => {
             // Invalid UTF-8, pass through
             let mode: c_uint = unsafe { args.arg() };
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_open) = orig.open {
+            if let Some(orig_open) = ORIGINAL_FUNCTIONS.open {
                 return unsafe { orig_open(pathname, flags, mode) };
             }
             return -1;
@@ -145,15 +170,17 @@ pub unsafe extern "C" fn open(pathname: *const c_char, flags: c_int, mut args: .
         debug!("open: {} -> {}", path_str, redirected);
 
         // Check if this is a device node we need to handle specially
-        if path_str.starts_with("/dev/input/event") || path_str.starts_with("/dev/input/js") {
+        if path_str.contains("/dev/uinput")
+            || path_str.starts_with("/dev/input/event")
+            || path_str.starts_with("/dev/input/js")
+        {
             return syscalls::open_device_node(&redirected, flags);
         }
 
         // Regular file redirection
         let new_path = CString::new(redirected).unwrap();
         let mode: c_uint = unsafe { args.arg() };
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_open) = orig.open {
+        if let Some(orig_open) = ORIGINAL_FUNCTIONS.open {
             return unsafe { orig_open(new_path.as_ptr(), flags, mode) };
         }
         return -1;
@@ -161,8 +188,7 @@ pub unsafe extern "C" fn open(pathname: *const c_char, flags: c_int, mut args: .
 
     // Pass through to original open
     let mode: c_uint = unsafe { args.arg() };
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_open) = orig.open {
+    if let Some(orig_open) = ORIGINAL_FUNCTIONS.open {
         return unsafe { orig_open(pathname, flags, mode) };
     }
     -1
@@ -179,8 +205,7 @@ pub unsafe extern "C" fn open64(pathname: *const c_char, flags: c_int, mut args:
         Ok(s) => s,
         Err(_) => {
             let mode: c_uint = unsafe { args.arg() };
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_open64) = orig.open64 {
+            if let Some(orig_open64) = ORIGINAL_FUNCTIONS.open64 {
                 return unsafe { orig_open64(pathname, flags, mode) };
             }
             return -1;
@@ -190,22 +215,23 @@ pub unsafe extern "C" fn open64(pathname: *const c_char, flags: c_int, mut args:
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("open64: {} -> {}", path_str, redirected);
 
-        if path_str.starts_with("/dev/input/event") || path_str.starts_with("/dev/input/js") {
+        if path_str.contains("/dev/uinput")
+            || path_str.starts_with("/dev/input/event")
+            || path_str.starts_with("/dev/input/js")
+        {
             return syscalls::open_device_node(&redirected, flags);
         }
 
         let new_path = CString::new(redirected).unwrap();
         let mode: c_uint = unsafe { args.arg() };
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_open64) = orig.open64 {
+        if let Some(orig_open64) = ORIGINAL_FUNCTIONS.open64 {
             return unsafe { orig_open64(new_path.as_ptr(), flags, mode) };
         }
         return -1;
     }
 
     let mode: c_uint = unsafe { args.arg() };
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_open64) = orig.open64 {
+    if let Some(orig_open64) = ORIGINAL_FUNCTIONS.open64 {
         return unsafe { orig_open64(pathname, flags, mode) };
     }
     -1
@@ -227,8 +253,7 @@ pub unsafe extern "C" fn openat(
         Ok(s) => s,
         Err(_) => {
             let mode: c_uint = unsafe { args.arg() };
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_openat) = orig.openat {
+            if let Some(orig_openat) = ORIGINAL_FUNCTIONS.openat {
                 return unsafe { orig_openat(dirfd, pathname, flags, mode) };
             }
             return -1;
@@ -240,14 +265,16 @@ pub unsafe extern "C" fn openat(
         if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
             debug!("openat: {} -> {}", path_str, redirected);
 
-            if path_str.starts_with("/dev/input/event") || path_str.starts_with("/dev/input/js") {
+            if path_str.contains("/dev/uinput")
+                || path_str.starts_with("/dev/input/event")
+                || path_str.starts_with("/dev/input/js")
+            {
                 return syscalls::open_device_node(&redirected, flags);
             }
 
             let new_path = CString::new(redirected).unwrap();
             let mode: c_uint = unsafe { args.arg() };
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_openat) = orig.openat {
+            if let Some(orig_openat) = ORIGINAL_FUNCTIONS.openat {
                 return unsafe { orig_openat(dirfd, new_path.as_ptr(), flags, mode) };
             }
             return -1;
@@ -255,8 +282,7 @@ pub unsafe extern "C" fn openat(
     }
 
     let mode: c_uint = unsafe { args.arg() };
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_openat) = orig.openat {
+    if let Some(orig_openat) = ORIGINAL_FUNCTIONS.openat {
         return unsafe { orig_openat(dirfd, pathname, flags, mode) };
     }
     -1
@@ -278,8 +304,7 @@ pub unsafe extern "C" fn openat64(
         Ok(s) => s,
         Err(_) => {
             let mode: c_uint = unsafe { args.arg() };
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_openat64) = orig.openat64 {
+            if let Some(orig_openat64) = ORIGINAL_FUNCTIONS.openat64 {
                 return unsafe { orig_openat64(dirfd, pathname, flags, mode) };
             }
             return -1;
@@ -290,14 +315,16 @@ pub unsafe extern "C" fn openat64(
         if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
             debug!("openat64: {} -> {}", path_str, redirected);
 
-            if path_str.starts_with("/dev/input/event") || path_str.starts_with("/dev/input/js") {
+            if path_str.contains("/dev/uinput")
+                || path_str.starts_with("/dev/input/event")
+                || path_str.starts_with("/dev/input/js")
+            {
                 return syscalls::open_device_node(&redirected, flags);
             }
 
             let new_path = CString::new(redirected).unwrap();
             let mode: c_uint = unsafe { args.arg() };
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_openat64) = orig.openat64 {
+            if let Some(orig_openat64) = ORIGINAL_FUNCTIONS.openat64 {
                 return unsafe { orig_openat64(dirfd, new_path.as_ptr(), flags, mode) };
             }
             return -1;
@@ -305,8 +332,7 @@ pub unsafe extern "C" fn openat64(
     }
 
     let mode: c_uint = unsafe { args.arg() };
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_openat64) = orig.openat64 {
+    if let Some(orig_openat64) = ORIGINAL_FUNCTIONS.openat64 {
         return unsafe { orig_openat64(dirfd, pathname, flags, mode) };
     }
     -1
@@ -322,8 +348,7 @@ pub unsafe extern "C" fn access(pathname: *const c_char, mode: c_int) -> c_int {
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_access) = orig.access {
+            if let Some(orig_access) = ORIGINAL_FUNCTIONS.access {
                 return unsafe { orig_access(pathname, mode) };
             }
             return -1;
@@ -333,15 +358,13 @@ pub unsafe extern "C" fn access(pathname: *const c_char, mode: c_int) -> c_int {
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("access: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_access) = orig.access {
+        if let Some(orig_access) = ORIGINAL_FUNCTIONS.access {
             return unsafe { orig_access(new_path.as_ptr(), mode) };
         }
         return -1;
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_access) = orig.access {
+    if let Some(orig_access) = ORIGINAL_FUNCTIONS.access {
         return unsafe { orig_access(pathname, mode) };
     }
     -1
@@ -357,8 +380,7 @@ pub unsafe extern "C" fn stat(pathname: *const c_char, statbuf: *mut libc::stat)
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_stat) = orig.stat {
+            if let Some(orig_stat) = ORIGINAL_FUNCTIONS.stat {
                 return unsafe { orig_stat(pathname, statbuf) };
             }
             return -1;
@@ -368,15 +390,13 @@ pub unsafe extern "C" fn stat(pathname: *const c_char, statbuf: *mut libc::stat)
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("stat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_stat) = orig.stat {
+        if let Some(orig_stat) = ORIGINAL_FUNCTIONS.stat {
             return unsafe { orig_stat(new_path.as_ptr(), statbuf) };
         }
         return -1;
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_stat) = orig.stat {
+    if let Some(orig_stat) = ORIGINAL_FUNCTIONS.stat {
         return unsafe { orig_stat(pathname, statbuf) };
     }
     -1
@@ -392,8 +412,7 @@ pub unsafe extern "C" fn lstat(pathname: *const c_char, statbuf: *mut libc::stat
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_lstat) = orig.lstat {
+            if let Some(orig_lstat) = ORIGINAL_FUNCTIONS.lstat {
                 return unsafe { orig_lstat(pathname, statbuf) };
             }
             return -1;
@@ -403,15 +422,13 @@ pub unsafe extern "C" fn lstat(pathname: *const c_char, statbuf: *mut libc::stat
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("lstat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_lstat) = orig.lstat {
+        if let Some(orig_lstat) = ORIGINAL_FUNCTIONS.lstat {
             return unsafe { orig_lstat(new_path.as_ptr(), statbuf) };
         }
         return -1;
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_lstat) = orig.lstat {
+    if let Some(orig_lstat) = ORIGINAL_FUNCTIONS.lstat {
         return unsafe { orig_lstat(pathname, statbuf) };
     }
     -1
@@ -431,8 +448,7 @@ pub unsafe extern "C" fn readlink(
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_readlink) = orig.readlink {
+            if let Some(orig_readlink) = ORIGINAL_FUNCTIONS.readlink {
                 return unsafe { orig_readlink(pathname, buf, bufsiz) };
             }
             return -1;
@@ -442,16 +458,51 @@ pub unsafe extern "C" fn readlink(
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("readlink: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_readlink) = orig.readlink {
+        if let Some(orig_readlink) = ORIGINAL_FUNCTIONS.readlink {
             return unsafe { orig_readlink(new_path.as_ptr(), buf, bufsiz) };
         }
         return -1;
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_readlink) = orig.readlink {
+    if let Some(orig_readlink) = ORIGINAL_FUNCTIONS.readlink {
         return unsafe { orig_readlink(pathname, buf, bufsiz) };
+    }
+    -1
+}
+
+/// Intercept read() - handle device reads
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn read(fd: c_int, buf: *mut c_void, count: libc::size_t) -> libc::ssize_t {
+    // Check if this is a uinput emulator FD
+    if syscalls::is_uinput_fd(fd) {
+        // Return EAGAIN (would block)
+        // This tells applications like Steam "no data right now, try again later"
+        unsafe {
+            *libc::__errno_location() = libc::EAGAIN;
+        }
+        return -1;
+    }
+
+    if let Some(orig_read) = ORIGINAL_FUNCTIONS.read {
+        return unsafe { orig_read(fd, buf, count) };
+    }
+    -1
+}
+
+/// Intercept write() - handle uinput event writes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn write(
+    fd: c_int,
+    buf: *const c_void,
+    count: libc::size_t,
+) -> libc::ssize_t {
+    // Check if this is a uinput emulator FD
+    if syscalls::is_uinput_fd(fd) {
+        return unsafe { syscalls::handle_uinput_write(fd, buf, count) };
+    }
+
+    if let Some(orig_write) = ORIGINAL_FUNCTIONS.write {
+        return unsafe { orig_write(fd, buf, count) };
     }
     -1
 }
@@ -459,15 +510,19 @@ pub unsafe extern "C" fn readlink(
 /// Intercept ioctl() - handle device capability queries
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ioctl(fd: c_int, request: c_long, mut args: ...) -> c_int {
+    // Check if this is a uinput emulator FD
+    if syscalls::is_uinput_fd(fd) {
+        return unsafe { syscalls::handle_uinput_ioctl(fd, request as u32, &mut args) };
+    }
+
     // Check if this is one of our virtual device FDs
     if syscalls::is_virtual_device_fd(fd) {
         return unsafe { syscalls::handle_ioctl(fd, request as u32, &mut args) };
     }
 
     // Pass through to original ioctl
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_ioctl) = orig.ioctl {
-        let arg: *mut libc::c_void = unsafe { args.arg() };
+    if let Some(orig_ioctl) = ORIGINAL_FUNCTIONS.ioctl {
+        let arg: *mut c_void = unsafe { args.arg() };
         return unsafe { orig_ioctl(fd, request, arg) };
     }
     -1
@@ -482,8 +537,7 @@ pub unsafe extern "C" fn close(fd: c_int) -> c_int {
     }
 
     // Call the real close
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_close) = orig.close {
+    if let Some(orig_close) = ORIGINAL_FUNCTIONS.close {
         return unsafe { orig_close(fd) };
     }
     -1
@@ -500,8 +554,7 @@ pub unsafe extern "C" fn fopen(pathname: *const c_char, mode: *const c_char) -> 
         Ok(s) => s,
         Err(_) => {
             // Pass through to original
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_fopen) = orig.fopen {
+            if let Some(orig_fopen) = ORIGINAL_FUNCTIONS.fopen {
                 return unsafe { orig_fopen(pathname, mode) };
             }
             return std::ptr::null_mut();
@@ -514,14 +567,13 @@ pub unsafe extern "C" fn fopen(pathname: *const c_char, mode: *const c_char) -> 
         let new_path_cstring = match CString::new(redirected.clone()) {
             Ok(s) => s,
             Err(e) => {
-                warn!("Failed to create CString for {}: {}", redirected, e);
+                debug!("Failed to create CString for {}: {}", redirected, e);
                 return std::ptr::null_mut();
             }
         };
 
         // Call original fopen with redirected path
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_fopen) = orig.fopen {
+        if let Some(orig_fopen) = ORIGINAL_FUNCTIONS.fopen {
             let result = unsafe { orig_fopen(new_path_cstring.as_ptr(), mode) };
             if result.is_null() {
                 debug!("fopen failed for redirected path: {}", redirected);
@@ -535,8 +587,7 @@ pub unsafe extern "C" fn fopen(pathname: *const c_char, mode: *const c_char) -> 
     }
 
     // Pass through to original
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_fopen) = orig.fopen {
+    if let Some(orig_fopen) = ORIGINAL_FUNCTIONS.fopen {
         return unsafe { orig_fopen(pathname, mode) };
     }
     std::ptr::null_mut()
@@ -552,8 +603,7 @@ pub unsafe extern "C" fn fopen64(pathname: *const c_char, mode: *const c_char) -
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_fopen64) = orig.fopen64 {
+            if let Some(orig_fopen64) = ORIGINAL_FUNCTIONS.fopen64 {
                 return unsafe { orig_fopen64(pathname, mode) };
             }
             return std::ptr::null_mut();
@@ -566,13 +616,12 @@ pub unsafe extern "C" fn fopen64(pathname: *const c_char, mode: *const c_char) -
         let new_path_cstring = match CString::new(redirected.clone()) {
             Ok(s) => s,
             Err(e) => {
-                warn!("Failed to create CString for {}: {}", redirected, e);
+                debug!("Failed to create CString for {}: {}", redirected, e);
                 return std::ptr::null_mut();
             }
         };
 
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_fopen64) = orig.fopen64 {
+        if let Some(orig_fopen64) = ORIGINAL_FUNCTIONS.fopen64 {
             let result = unsafe { orig_fopen64(new_path_cstring.as_ptr(), mode) };
             if result.is_null() {
                 debug!("fopen64 failed for redirected path: {}", redirected);
@@ -584,8 +633,7 @@ pub unsafe extern "C" fn fopen64(pathname: *const c_char, mode: *const c_char) -
         return std::ptr::null_mut();
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_fopen64) = orig.fopen64 {
+    if let Some(orig_fopen64) = ORIGINAL_FUNCTIONS.fopen64 {
         return unsafe { orig_fopen64(pathname, mode) };
     }
     std::ptr::null_mut()
@@ -601,8 +649,7 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut libc::DIR {
     let path_str = match unsafe { CStr::from_ptr(name).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_opendir) = orig.opendir {
+            if let Some(orig_opendir) = ORIGINAL_FUNCTIONS.opendir {
                 return unsafe { orig_opendir(name) };
             }
             return std::ptr::null_mut();
@@ -621,8 +668,7 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut libc::DIR {
 
         debug!("opendir: /dev/input -> {}", redirected.display());
         let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_opendir) = orig.opendir {
+        if let Some(orig_opendir) = ORIGINAL_FUNCTIONS.opendir {
             return unsafe { orig_opendir(new_path.as_ptr()) };
         }
         return std::ptr::null_mut();
@@ -632,15 +678,13 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut libc::DIR {
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("opendir: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_opendir) = orig.opendir {
+        if let Some(orig_opendir) = ORIGINAL_FUNCTIONS.opendir {
             return unsafe { orig_opendir(new_path.as_ptr()) };
         }
         return std::ptr::null_mut();
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_opendir) = orig.opendir {
+    if let Some(orig_opendir) = ORIGINAL_FUNCTIONS.opendir {
         return unsafe { orig_opendir(name) };
     }
     std::ptr::null_mut()
@@ -663,8 +707,7 @@ pub unsafe extern "C" fn scandir(
     let path_str = match unsafe { CStr::from_ptr(dirp).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_scandir) = orig.scandir {
+            if let Some(orig_scandir) = ORIGINAL_FUNCTIONS.scandir {
                 return unsafe { orig_scandir(dirp, namelist, filter, compar) };
             }
             return -1;
@@ -680,8 +723,7 @@ pub unsafe extern "C" fn scandir(
 
         debug!("scandir: /dev/input -> {}", redirected.display());
         let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_scandir) = orig.scandir {
+        if let Some(orig_scandir) = ORIGINAL_FUNCTIONS.scandir {
             return unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
         }
         return -1;
@@ -691,15 +733,13 @@ pub unsafe extern "C" fn scandir(
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("scandir: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_scandir) = orig.scandir {
+        if let Some(orig_scandir) = ORIGINAL_FUNCTIONS.scandir {
             return unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
         }
         return -1;
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_scandir) = orig.scandir {
+    if let Some(orig_scandir) = ORIGINAL_FUNCTIONS.scandir {
         return unsafe { orig_scandir(dirp, namelist, filter, compar) };
     }
     -1
@@ -715,8 +755,7 @@ pub unsafe extern "C" fn stat64(pathname: *const c_char, statbuf: *mut libc::sta
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_stat64) = orig.stat64 {
+            if let Some(orig_stat64) = ORIGINAL_FUNCTIONS.stat64 {
                 return unsafe { orig_stat64(pathname, statbuf) };
             }
             return -1;
@@ -726,14 +765,12 @@ pub unsafe extern "C" fn stat64(pathname: *const c_char, statbuf: *mut libc::sta
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("stat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_stat64) = orig.stat64 {
+        if let Some(orig_stat64) = ORIGINAL_FUNCTIONS.stat64 {
             return unsafe { orig_stat64(new_path.as_ptr(), statbuf) };
         }
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_stat64) = orig.stat64 {
+    if let Some(orig_stat64) = ORIGINAL_FUNCTIONS.stat64 {
         return unsafe { orig_stat64(pathname, statbuf) };
     }
     -1
@@ -749,8 +786,7 @@ pub unsafe extern "C" fn lstat64(pathname: *const c_char, statbuf: *mut libc::st
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_lstat64) = orig.lstat64 {
+            if let Some(orig_lstat64) = ORIGINAL_FUNCTIONS.lstat64 {
                 return unsafe { orig_lstat64(pathname, statbuf) };
             }
             return -1;
@@ -760,14 +796,12 @@ pub unsafe extern "C" fn lstat64(pathname: *const c_char, statbuf: *mut libc::st
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("lstat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_lstat64) = orig.lstat64 {
+        if let Some(orig_lstat64) = ORIGINAL_FUNCTIONS.lstat64 {
             return unsafe { orig_lstat64(new_path.as_ptr(), statbuf) };
         }
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_lstat64) = orig.lstat64 {
+    if let Some(orig_lstat64) = ORIGINAL_FUNCTIONS.lstat64 {
         return unsafe { orig_lstat64(pathname, statbuf) };
     }
     -1
@@ -787,8 +821,7 @@ pub unsafe extern "C" fn __xstat(
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_xstat) = orig.xstat {
+            if let Some(orig_xstat) = ORIGINAL_FUNCTIONS.xstat {
                 return unsafe { orig_xstat(ver, pathname, statbuf) };
             }
             return -1;
@@ -798,14 +831,12 @@ pub unsafe extern "C" fn __xstat(
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("__xstat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_xstat) = orig.xstat {
+        if let Some(orig_xstat) = ORIGINAL_FUNCTIONS.xstat {
             return unsafe { orig_xstat(ver, new_path.as_ptr(), statbuf) };
         }
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_xstat) = orig.xstat {
+    if let Some(orig_xstat) = ORIGINAL_FUNCTIONS.xstat {
         return unsafe { orig_xstat(ver, pathname, statbuf) };
     }
     -1
@@ -825,8 +856,7 @@ pub unsafe extern "C" fn __xstat64(
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_xstat64) = orig.xstat64 {
+            if let Some(orig_xstat64) = ORIGINAL_FUNCTIONS.xstat64 {
                 return unsafe { orig_xstat64(ver, pathname, statbuf) };
             }
             return -1;
@@ -836,14 +866,12 @@ pub unsafe extern "C" fn __xstat64(
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("__xstat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_xstat64) = orig.xstat64 {
+        if let Some(orig_xstat64) = ORIGINAL_FUNCTIONS.xstat64 {
             return unsafe { orig_xstat64(ver, new_path.as_ptr(), statbuf) };
         }
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_xstat64) = orig.xstat64 {
+    if let Some(orig_xstat64) = ORIGINAL_FUNCTIONS.xstat64 {
         return unsafe { orig_xstat64(ver, pathname, statbuf) };
     }
     -1
@@ -863,8 +891,7 @@ pub unsafe extern "C" fn __lxstat(
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_lxstat) = orig.lxstat {
+            if let Some(orig_lxstat) = ORIGINAL_FUNCTIONS.lxstat {
                 return unsafe { orig_lxstat(ver, pathname, statbuf) };
             }
             return -1;
@@ -874,14 +901,12 @@ pub unsafe extern "C" fn __lxstat(
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("__lxstat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_lxstat) = orig.lxstat {
+        if let Some(orig_lxstat) = ORIGINAL_FUNCTIONS.lxstat {
             return unsafe { orig_lxstat(ver, new_path.as_ptr(), statbuf) };
         }
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_lxstat) = orig.lxstat {
+    if let Some(orig_lxstat) = ORIGINAL_FUNCTIONS.lxstat {
         return unsafe { orig_lxstat(ver, pathname, statbuf) };
     }
     -1
@@ -901,8 +926,7 @@ pub unsafe extern "C" fn __lxstat64(
     let path_str = match unsafe { CStr::from_ptr(pathname).to_str() } {
         Ok(s) => s,
         Err(_) => {
-            let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-            if let Some(orig_lxstat64) = orig.lxstat64 {
+            if let Some(orig_lxstat64) = ORIGINAL_FUNCTIONS.lxstat64 {
                 return unsafe { orig_lxstat64(ver, pathname, statbuf) };
             }
             return -1;
@@ -912,15 +936,164 @@ pub unsafe extern "C" fn __lxstat64(
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("__lxstat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
-        let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-        if let Some(orig_lxstat64) = orig.lxstat64 {
+        if let Some(orig_lxstat64) = ORIGINAL_FUNCTIONS.lxstat64 {
             return unsafe { orig_lxstat64(ver, new_path.as_ptr(), statbuf) };
         }
     }
 
-    let orig = ORIGINAL_FUNCTIONS.lock().unwrap();
-    if let Some(orig_lxstat64) = orig.lxstat64 {
+    if let Some(orig_lxstat64) = ORIGINAL_FUNCTIONS.lxstat64 {
         return unsafe { orig_lxstat64(ver, pathname, statbuf) };
+    }
+    -1
+}
+
+/// Intercept poll() to monitor udev fds
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn poll(fds: *mut libc::pollfd, nfds: libc::nfds_t, timeout: c_int) -> c_int {
+    // Check if any udev fds are being polled
+    if !fds.is_null() && nfds > 0 {
+        let fds_slice = unsafe { std::slice::from_raw_parts(fds, nfds as usize) };
+        for pfd in fds_slice {
+            if syscalls::is_uinput_fd(pfd.fd) {
+                tracing::trace!("poll: uinput fd {} being polled", pfd.fd);
+            }
+            if syscalls::is_udev_monitor_fd(pfd.fd) {
+                tracing::trace!("poll: UDEV MONITOR fd {} (events={:x})", pfd.fd, pfd.events);
+            }
+        }
+    }
+
+    if let Some(orig_poll) = ORIGINAL_FUNCTIONS.poll {
+        return unsafe { orig_poll(fds, nfds, timeout) };
+    }
+    -1
+}
+
+// Intercept epoll_wait
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_wait(
+    epfd: c_int,
+    events: *mut libc::epoll_event,
+    maxevents: c_int,
+    timeout: c_int,
+) -> c_int {
+    if let Some(orig_epoll_wait) = ORIGINAL_FUNCTIONS.epoll_wait {
+        let result = unsafe { orig_epoll_wait(epfd, events, maxevents, timeout) };
+
+        // Log which fds got events
+        if result > 0 && !events.is_null() {
+            let events_slice = unsafe { std::slice::from_raw_parts(events, result as usize) };
+            for event in events_slice {
+                let fd = event.u64 as c_int; // Typically fd stored in u64
+                if syscalls::is_uinput_fd(fd) {
+                    tracing::trace!("epoll_wait: uinput fd {} ready (events={:x})", fd, {
+                        event.events
+                    });
+                }
+                if syscalls::is_udev_monitor_fd(fd) {
+                    tracing::trace!("epoll_wait: UDEV MONITOR fd {} ready (events={:x})", fd, {
+                        event.events
+                    });
+                }
+            }
+        }
+
+        return result;
+    }
+    -1
+}
+
+// Intercept epoll_pwait
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn epoll_pwait(
+    epfd: c_int,
+    events: *mut libc::epoll_event,
+    maxevents: c_int,
+    timeout: c_int,
+    sigmask: *const libc::sigset_t,
+) -> c_int {
+    if let Some(orig_epoll_pwait) = ORIGINAL_FUNCTIONS.epoll_pwait {
+        let result = unsafe { orig_epoll_pwait(epfd, events, maxevents, timeout, sigmask) };
+
+        // Log which fds got events
+        if result > 0 && !events.is_null() {
+            let events_slice = unsafe { std::slice::from_raw_parts(events, result as usize) };
+            for event in events_slice {
+                let fd = event.u64 as c_int; // Typically fd stored in u64
+                if syscalls::is_uinput_fd(fd) {
+                    tracing::trace!("epoll_pwait: uinput fd {} ready (events={:x})", fd, {
+                        event.events
+                    });
+                }
+                if syscalls::is_udev_monitor_fd(fd) {
+                    tracing::trace!("epoll_pwait: UDEV MONITOR fd {} ready (events={:x})", fd, {
+                        event.events
+                    });
+                }
+            }
+        }
+
+        return result;
+    }
+    -1
+}
+
+// Intercept inotify_init
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn inotify_init() -> c_int {
+    if let Some(orig) = ORIGINAL_FUNCTIONS.inotify_init {
+        let result = unsafe { orig() };
+        tracing::trace!("inotify_init: fd={}", result);
+        return result;
+    }
+    -1
+}
+
+// Intercept inotify_init1
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn inotify_init1(flags: c_int) -> c_int {
+    if let Some(orig) = ORIGINAL_FUNCTIONS.inotify_init1 {
+        let result = unsafe { orig(flags) };
+        tracing::trace!("inotify_init1: fd={}", result);
+        return result;
+    }
+    -1
+}
+
+// Intercept inotify_add_watch - THIS IS THE CRITICAL ONE
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn inotify_add_watch(fd: c_int, pathname: *const c_char, mask: u32) -> c_int {
+    if pathname.is_null() {
+        if let Some(orig) = ORIGINAL_FUNCTIONS.inotify_add_watch {
+            return unsafe { orig(fd, pathname, mask) };
+        }
+        return -1;
+    }
+
+    let path_str = unsafe { CStr::from_ptr(pathname).to_str().unwrap_or("") };
+
+    // Redirect /dev/input to our fake directory!
+    if path_str == "/dev/input" || path_str.starts_with("/dev/input/") {
+        let redirected = PATH_REDIRECTOR
+            .redirect(path_str)
+            .unwrap_or_else(|| format!("{}/devices", syscalls::get_base_path()));
+
+        tracing::trace!(
+            "!!! inotify_add_watch: {} -> {} (mask={:#x}) !!!",
+            path_str, redirected, mask
+        );
+
+        let new_path = CString::new(redirected).unwrap();
+        if let Some(orig) = ORIGINAL_FUNCTIONS.inotify_add_watch {
+            return unsafe { orig(fd, new_path.as_ptr(), mask) };
+        }
+        return -1;
+    }
+
+    tracing::trace!("inotify_add_watch: {} (mask={:#x})", path_str, mask);
+
+    if let Some(orig) = ORIGINAL_FUNCTIONS.inotify_add_watch {
+        return unsafe { orig(fd, pathname, mask) };
     }
     -1
 }

@@ -139,7 +139,6 @@ impl VirtualController {
         }
     }
 }
-
 impl Drop for VirtualController {
     fn drop(&mut self) {
         let client = Arc::clone(&self.client);

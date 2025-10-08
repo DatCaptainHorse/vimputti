@@ -108,7 +108,6 @@ pub enum Button {
     // Custom button with raw code
     Custom(u16),
 }
-
 impl Button {
     /// Convert button to Linux input event code
     pub fn to_ev_code(self) -> u16 {
@@ -172,7 +171,6 @@ pub enum Axis {
     DPadY,
     Custom(u16),
 }
-
 impl Axis {
     /// Convert axis to Linux input event code
     pub fn to_ev_code(self) -> u16 {
@@ -204,6 +202,7 @@ impl Axis {
         }
     }
 }
+
 /// Configuration for an axis
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AxisConfig {
@@ -213,7 +212,6 @@ pub struct AxisConfig {
     pub fuzz: i32,
     pub flat: i32,
 }
-
 impl AxisConfig {
     pub fn new(axis: Axis, min: i32, max: i32) -> Self {
         Self {
@@ -242,6 +240,25 @@ pub enum InputEvent {
     /// Synchronization event (automatically added if not present)
     Sync,
 }
+impl InputEvent {
+    /// Convert to LinuxInputEvent
+    pub fn to_linux_input_event(&self) -> LinuxInputEvent {
+        match self {
+            InputEvent::Button { button, pressed } => {
+                LinuxInputEvent::new(EV_KEY, button.to_ev_code(), if *pressed { 1 } else { 0 })
+            }
+            InputEvent::Axis { axis, value } => {
+                LinuxInputEvent::new(EV_ABS, axis.to_ev_code(), *value)
+            }
+            InputEvent::Raw {
+                event_type,
+                code,
+                value,
+            } => LinuxInputEvent::new(*event_type, *code, *value),
+            InputEvent::Sync => LinuxInputEvent::new(EV_SYN, SYN_REPORT, 0),
+        }
+    }
+}
 
 /// Information about an active device
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,7 +272,7 @@ pub struct DeviceInfo {
 }
 
 /// Linux input event structure (for sending to device sockets)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct LinuxInputEvent {
     pub time: TimeVal,
@@ -263,34 +280,6 @@ pub struct LinuxInputEvent {
     pub code: u16,
     pub value: i32,
 }
-
-/// Linux ABS input event structure (for absolute axes)
-#[repr(C, packed)]
-pub struct LinuxAbsEvent {
-    pub value: i32,
-    pub minimum: i32,
-    pub maximum: i32,
-    pub fuzz: i32,
-    pub flat: i32,
-    pub resolution: i32,
-}
-
-/// Linux joystick input event structure (for joystick nodes)
-#[repr(C, packed)]
-pub struct LinuxJsEvent {
-    pub time: u32,
-    pub value: i16,
-    pub type_: u8,
-    pub number: u8,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct TimeVal {
-    pub tv_sec: i64,
-    pub tv_usec: i64,
-}
-
 impl LinuxInputEvent {
     pub fn new(event_type: u16, code: u16, value: i32) -> Self {
         Self {
@@ -306,6 +295,34 @@ impl LinuxInputEvent {
     }
 }
 
+/// Linux ABS input event structure (for absolute axes)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+pub struct LinuxAbsEvent {
+    pub value: i32,
+    pub minimum: i32,
+    pub maximum: i32,
+    pub fuzz: i32,
+    pub flat: i32,
+    pub resolution: i32,
+}
+
+/// Linux joystick input event structure (for joystick nodes)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C, packed)]
+pub struct LinuxJsEvent {
+    pub time: u32,
+    pub value: i16,
+    pub type_: u8,
+    pub number: u8,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+pub struct TimeVal {
+    pub tv_sec: i64,
+    pub tv_usec: i64,
+}
 impl TimeVal {
     pub fn now() -> Self {
         let now = std::time::SystemTime::now()
@@ -325,3 +342,72 @@ pub const EV_REL: u16 = 0x02;
 pub const EV_ABS: u16 = 0x03;
 
 pub const SYN_REPORT: u16 = 0;
+
+/* uinput structures */
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceSetup {
+    pub name: String,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub version: u16,
+    pub bustype: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UinputRequest {
+    /// ioctl: UI_SET_EVBIT
+    SetEvBit { ev_type: u16 },
+    /// ioctl: UI_SET_KEYBIT
+    SetKeyBit { key_code: u16 },
+    /// ioctl: UI_SET_ABSBIT
+    SetAbsBit { abs_code: u16 },
+    /// ioctl: UI_SET_RELBIT
+    SetRelBit { rel_code: u16 },
+    /// ioctl: UI_ABS_SETUP
+    AbsSetup { code: u16, absinfo: LinuxAbsEvent },
+    /// ioctl: UI_DEV_SETUP
+    DevSetup { setup: DeviceSetup },
+    /// ioctl: UI_DEV_CREATE
+    DevCreate {},
+    /// ioctl: UI_DEV_DESTROY
+    DevDestroy {},
+    /// write() - send input events
+    WriteEvents { events: Vec<LinuxInputEvent> },
+}
+impl UinputRequest {
+    /// Serialize to length-prefixed bytes (4-byte LE length + JSON)
+    pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let json = serde_json::to_vec(self)?;
+        let len = json.len() as u32;
+        let mut bytes = len.to_le_bytes().to_vec();
+        bytes.extend(json);
+        Ok(bytes)
+    }
+
+    /// Deserialize from bytes (without length prefix)
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UinputResponse {
+    pub success: bool,
+    pub device_id: Option<DeviceId>,
+    pub error: Option<String>,
+}
+impl UinputResponse {
+    /// Serialize to length-prefixed bytes (4-byte LE length + JSON)
+    pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let json = serde_json::to_vec(self)?;
+        let len = json.len() as u32;
+        let mut bytes = len.to_le_bytes().to_vec();
+        bytes.extend(json);
+        Ok(bytes)
+    }
+
+    /// Deserialize from bytes (without length prefix)
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
