@@ -1,13 +1,25 @@
+use crate::ORIGINAL_FUNCTIONS;
 use libc::{c_int, c_uint};
-use std::collections::HashMap;
+use parking_lot::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::os::fd::AsRawFd;
 use std::os::unix::io::RawFd;
-use std::sync::Mutex;
-use tracing::{debug, warn};
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+use tracing::{debug, trace};
 use vimputti::*;
 
 lazy_static::lazy_static! {
     // Track which FDs are our virtual device sockets
     static ref VIRTUAL_DEVICE_FDS: Mutex<HashMap<RawFd, DeviceInfo>> = Mutex::new(HashMap::new());
+    // Track which FDs are uinput emulator connections
+    static ref UINPUT_FDS: Mutex<HashMap<RawFd, Arc<Mutex<UinputConnection>>>> = Mutex::new(HashMap::new());
+    // Track which FDs are udev connections
+    static ref UDEV_MONITOR_FDS: Mutex<HashSet<RawFd>> = Mutex::new(HashSet::new());
+}
+
+struct UinputConnection {
+    stream: UnixStream,
 }
 
 #[derive(Clone)]
@@ -30,6 +42,18 @@ impl DeviceInfo {
     }
 }
 
+pub(crate) fn get_all_device_configs() -> Vec<(String, DeviceConfig)> {
+    VIRTUAL_DEVICE_FDS
+        .lock()
+        .values()
+        .map(|info| (info.event_node.clone(), info.config.clone()))
+        .collect()
+}
+
+pub(crate) fn get_base_path() -> String {
+    "/tmp/vimputti".to_string()
+}
+
 /// Open a device node (actually connect to Unix socket)
 pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
     use std::io::Read;
@@ -40,6 +64,20 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
 
     match UnixStream::connect(socket_path) {
         Ok(mut stream) => {
+            // Check if this is the uinput socket
+            if socket_path.ends_with("/uinput") {
+                let fd = stream.as_raw_fd();
+
+                let connection = UinputConnection { stream };
+
+                UINPUT_FDS
+                    .lock()
+                    .insert(fd, Arc::new(Mutex::new(connection)));
+
+                debug!("Opened uinput emulator: fd={}", fd);
+                return fd;
+            }
+
             // Extract event node name from path
             let event_node = socket_path
                 .split('/')
@@ -66,18 +104,18 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                                 config
                             }
                             Err(e) => {
-                                warn!("Failed to deserialize device config: {}, using default", e);
+                                debug!("Failed to deserialize device config: {}, using default", e);
                                 vimputti::templates::ControllerTemplates::xbox360()
                             }
                         },
                         Err(e) => {
-                            warn!("Failed to read device config data: {}, using default", e);
+                            debug!("Failed to read device config data: {}, using default", e);
                             vimputti::templates::ControllerTemplates::xbox360()
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to read config length: {}, using default", e);
+                    debug!("Failed to read config length: {}, using default", e);
                     vimputti::templates::ControllerTemplates::xbox360()
                 }
             };
@@ -85,7 +123,7 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
             let fd = stream.into_raw_fd();
 
             // Register this FD as a virtual device
-            VIRTUAL_DEVICE_FDS.lock().unwrap().insert(
+            VIRTUAL_DEVICE_FDS.lock().insert(
                 fd,
                 DeviceInfo {
                     event_node: event_node.clone(),
@@ -105,7 +143,7 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
             fd
         }
         Err(e) => {
-            warn!("Failed to connect to device socket {}: {}", socket_path, e);
+            debug!("Failed to connect to device socket {}: {}", socket_path, e);
             -1
         }
     }
@@ -113,22 +151,27 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
 
 /// Check if an FD is one of our virtual devices
 pub fn is_virtual_device_fd(fd: RawFd) -> bool {
-    VIRTUAL_DEVICE_FDS.lock().unwrap().contains_key(&fd)
+    VIRTUAL_DEVICE_FDS.lock().contains_key(&fd)
+}
+
+/// Check if an FD is a uinput emulator FD
+pub fn is_uinput_fd(fd: RawFd) -> bool {
+    UINPUT_FDS.lock().contains_key(&fd)
+}
+
+pub fn register_udev_monitor_fd(fd: RawFd) {
+    UDEV_MONITOR_FDS.lock().insert(fd);
+    debug!("Registered udev monitor fd: {}", fd);
+}
+
+pub fn is_udev_monitor_fd(fd: RawFd) -> bool {
+    UDEV_MONITOR_FDS.lock().contains(&fd)
 }
 
 /// Handle ioctl() calls on virtual device FDs
 pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaListImpl) -> c_int {
-    debug!(
-        "ioctl on fd={}, request=0x{:08x} (type={}, nr={}, size={})",
-        fd,
-        request,
-        (request >> 8) & 0xFF,
-        request & 0xFF,
-        (request >> 16) & 0x3FFF
-    );
-
     // Get device info
-    let device_fds = VIRTUAL_DEVICE_FDS.lock().unwrap();
+    let device_fds = VIRTUAL_DEVICE_FDS.lock();
     let device_info = device_fds.get(&fd).cloned();
     drop(device_fds);
 
@@ -167,7 +210,6 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     *ptr = 0x020100; // Version 2.1.0
                 }
-                debug!("ioctl JSIOCGVERSION: returning 0x020100");
             }
             0
         }
@@ -178,10 +220,6 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     *ptr = device_info.num_axes();
                 }
-                debug!(
-                    "ioctl JSIOCGAXES: returning {} axes",
-                    device_info.num_axes()
-                );
             }
             0
         }
@@ -192,10 +230,6 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     *ptr = device_info.num_buttons();
                 }
-                debug!(
-                    "ioctl JSIOCGBUTTONS: returning {} buttons",
-                    device_info.num_buttons()
-                );
             }
             0
         }
@@ -216,10 +250,6 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     std::ptr::copy_nonoverlapping(axis_map.as_ptr(), ptr, copy_len);
                 }
-                debug!(
-                    "ioctl JSIOCGAXMAP: returning axis map with {} axes",
-                    axis_map.len()
-                );
             }
             0
         }
@@ -240,10 +270,6 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     std::ptr::copy_nonoverlapping(button_map.as_ptr(), ptr, copy_len);
                 }
-                debug!(
-                    "ioctl JSIOCGBTNMAP: returning button map with {} buttons",
-                    button_map.len()
-                );
             }
             0
         }
@@ -261,10 +287,6 @@ unsafe fn handle_joystick_ioctl(
                 unsafe {
                     *ptr.add(copy_len) = 0;
                 } // Null terminator
-                debug!(
-                    "ioctl JSIOCGNAME: returning '{}'",
-                    device_info.device_name()
-                );
                 copy_len as c_int
             } else {
                 -1
@@ -325,7 +347,6 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     *ptr = 0x010001;
                 }
-                debug!("ioctl EVIOCGVERSION: returning 0x010001");
             }
             0
         }
@@ -349,10 +370,6 @@ unsafe fn handle_evdev_ioctl(
                         version: device_info.config.version,
                     };
                 }
-                debug!(
-                    "ioctl EVIOCGID: returning vendor=0x{:04x}, product=0x{:04x}",
-                    device_info.config.vendor_id, device_info.config.product_id
-                );
             }
             0
         }
@@ -369,10 +386,6 @@ unsafe fn handle_evdev_ioctl(
                     std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr, copy_len);
                     *ptr.add(copy_len) = 0;
                 }
-                debug!(
-                    "ioctl EVIOCGNAME: returning '{}'",
-                    device_info.device_name()
-                );
                 copy_len as c_int
             } else {
                 -1
@@ -390,7 +403,6 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     std::ptr::copy_nonoverlapping(phys.as_ptr(), ptr, copy_len);
                 }
-                debug!("ioctl EVIOCGPHYS: returning 'vimputti-virtual'");
                 copy_len as c_int
             } else {
                 -1
@@ -406,7 +418,6 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     *ptr = 0;
                 }
-                debug!("ioctl EVIOCGUNIQ: returning empty");
                 1
             } else {
                 -1
@@ -422,7 +433,6 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     std::ptr::write_bytes(ptr, 0, len);
                 }
-                debug!("ioctl EVIOCGPROP: returning empty properties");
                 0
             } else {
                 -1
@@ -452,7 +462,6 @@ unsafe fn handle_evdev_ioctl(
                                 *ptr = 0b00001011;
                             }
                         }
-                        debug!("ioctl EVIOCGBIT(0): returning supported event types");
                     }
                     EV_KEY => {
                         for button in &device_info.config.buttons {
@@ -472,7 +481,6 @@ unsafe fn handle_evdev_ioctl(
                                 *ptr.add(code / 8) |= 1 << (code % 8);
                             }
                         }
-                        debug!("ioctl EVIOCGBIT(EV_ABS): returning axis bits");
                     }
                     _ => {
                         debug!("ioctl EVIOCGBIT({}): unknown type", ev_type);
@@ -511,19 +519,16 @@ unsafe fn handle_evdev_ioctl(
                 };
 
                 // Fallback to defaults if not found
-                let default_info = LinuxAbsEvent {
-                    value: 0,
-                    minimum: -32768,
-                    maximum: 32767,
-                    fuzz: 16,
-                    flat: 128,
-                    resolution: 0,
-                };
-
                 unsafe {
-                    *ptr = axis_info.unwrap_or(default_info);
+                    *ptr = axis_info.unwrap_or(LinuxAbsEvent {
+                        value: 0,
+                        minimum: -32768,
+                        maximum: 32767,
+                        fuzz: 16,
+                        flat: 128,
+                        resolution: 0,
+                    });
                 }
-                debug!("ioctl EVIOCGABS({}): returning axis info", axis_code);
                 0
             } else {
                 -1
@@ -538,7 +543,323 @@ unsafe fn handle_evdev_ioctl(
 
 /// Clean up when a virtual device FD is closed
 pub fn close_virtual_device(fd: RawFd) {
-    if let Some(info) = VIRTUAL_DEVICE_FDS.lock().unwrap().remove(&fd) {
-        debug!("Closed virtual device: fd={}, node={}", fd, info.event_node);
+    VIRTUAL_DEVICE_FDS.lock().remove(&fd);
+    UINPUT_FDS.lock().remove(&fd);
+}
+
+// Helper to send uinput request and get response
+fn send_uinput_request(fd: RawFd, request: vimputti::protocol::UinputRequest) -> c_int {
+    use std::io::{Read, Write};
+
+    let connection_arc = {
+        let uinput_fds = UINPUT_FDS.lock();
+        match uinput_fds.get(&fd) {
+            Some(c) => c.clone(),
+            None => {
+                debug!("uinput fd {} not found", fd);
+                return -1;
+            }
+        }
+    };
+
+    let mut connection = connection_arc.lock();
+
+    // Serialize request with length prefix
+    let request_bytes = match request.to_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            debug!("Failed to serialize request: {}", e);
+            return -1;
+        }
+    };
+
+    trace!("Sending {} bytes to uinput fd={}", request_bytes.len(), fd);
+
+    // Send request (4-byte length prefix + JSON)
+    if let Err(e) = connection.stream.write_all(&request_bytes) {
+        debug!("Failed to write request to fd={}: {}", fd, e);
+        return -1;
     }
+    if let Err(e) = connection.stream.flush() {
+        debug!("Failed to flush fd={}: {}", fd, e);
+        return -1;
+    }
+
+    // Read response - 4-byte length prefix first
+    let mut len_buf = [0u8; 4];
+    match connection.stream.read_exact(&mut len_buf) {
+        Ok(_) => {}
+        Err(e) => {
+            debug!("Failed to read response length from fd={}: {}", fd, e);
+            return -1;
+        }
+    }
+
+    let response_len = u32::from_le_bytes(len_buf) as usize;
+    if response_len == 0 || response_len > 1_000_000 {
+        debug!("Invalid response length: {} from fd={}", response_len, fd);
+        return -1;
+    }
+
+    trace!("Reading {} byte response from fd={}", response_len, fd);
+
+    // Read response body
+    let mut response_buf = vec![0u8; response_len];
+    match connection.stream.read_exact(&mut response_buf) {
+        Ok(_) => {}
+        Err(e) => {
+            debug!("Failed to read response body from fd={}: {}", fd, e);
+            return -1;
+        }
+    }
+
+    let response: vimputti::protocol::UinputResponse =
+        match vimputti::protocol::UinputResponse::from_bytes(&response_buf) {
+            Ok(resp) => resp,
+            Err(e) => {
+                debug!("Failed to parse response from fd={}: {}", fd, e);
+                return -1;
+            }
+        };
+
+    trace!("Response from fd={}: success={}", fd, response.success);
+
+    if response.success { 0 } else { -1 }
+}
+
+/// Handle uinput ioctl calls
+pub unsafe fn handle_uinput_ioctl(
+    fd: RawFd,
+    request: c_uint,
+    args: &mut std::ffi::VaListImpl,
+) -> c_int {
+    const UI_SET_EVBIT: c_uint = 0x40045564;
+    const UI_SET_KEYBIT: c_uint = 0x40045565;
+    const UI_SET_RELBIT: c_uint = 0x40045566;
+    const UI_SET_ABSBIT: c_uint = 0x40045567;
+    const UI_SET_MSCBIT: c_uint = 0x40045568;
+    const UI_SET_LEDBIT: c_uint = 0x40045569;
+    const UI_SET_SNDBIT: c_uint = 0x4004556a;
+    const UI_SET_FFBIT: c_uint = 0x4004556b;
+    const UI_SET_PHYS: c_uint = 0x4004556c;
+    const UI_SET_SWBIT: c_uint = 0x4004556d;
+    const UI_SET_PROPBIT: c_uint = 0x4004556e;
+
+    const UI_DEV_SETUP: c_uint = 0x405c5503;
+    const UI_DEV_CREATE: c_uint = 0x5501;
+    const UI_DEV_DESTROY: c_uint = 0x5502;
+    const UI_ABS_SETUP: c_uint = 0x401c5504;
+
+    const FIONREAD: c_uint = 0x5421;
+
+    debug!("uinput ioctl: fd={}, request=0x{:x}", fd, request);
+
+    match request {
+        UI_SET_EVBIT => {
+            let ev_type: c_uint = unsafe { args.arg() };
+            send_uinput_request(
+                fd,
+                vimputti::protocol::UinputRequest::SetEvBit {
+                    ev_type: ev_type as u16,
+                },
+            )
+        }
+
+        UI_SET_KEYBIT => {
+            let key_code: c_uint = unsafe { args.arg() };
+            send_uinput_request(
+                fd,
+                vimputti::protocol::UinputRequest::SetKeyBit {
+                    key_code: key_code as u16,
+                },
+            )
+        }
+
+        UI_SET_ABSBIT => {
+            let abs_code: c_uint = unsafe { args.arg() };
+            send_uinput_request(
+                fd,
+                vimputti::protocol::UinputRequest::SetAbsBit {
+                    abs_code: abs_code as u16,
+                },
+            )
+        }
+
+        UI_SET_RELBIT => {
+            let rel_code: c_uint = unsafe { args.arg() };
+            send_uinput_request(
+                fd,
+                vimputti::protocol::UinputRequest::SetRelBit {
+                    rel_code: rel_code as u16,
+                },
+            )
+        }
+
+        UI_ABS_SETUP => {
+            #[repr(C)]
+            struct UiAbsSetup {
+                code: u16,
+                absinfo: vimputti::LinuxAbsEvent,
+            }
+            let ptr: *const UiAbsSetup = unsafe { args.arg() };
+            if !ptr.is_null() {
+                let setup = unsafe { &*ptr };
+                send_uinput_request(
+                    fd,
+                    vimputti::protocol::UinputRequest::AbsSetup {
+                        code: setup.code,
+                        absinfo: setup.absinfo,
+                    },
+                )
+            } else {
+                0
+            }
+        }
+
+        UI_DEV_SETUP => {
+            #[repr(C)]
+            struct UiSetup {
+                id: [u16; 4], // bustype, vendor, product, version
+                name: [u8; 80],
+                ff_effects_max: u32,
+            }
+            let ptr: *const UiSetup = unsafe { args.arg() };
+            if !ptr.is_null() {
+                let setup = unsafe { &*ptr };
+                let name = std::ffi::CStr::from_bytes_until_nul(&setup.name)
+                    .ok()
+                    .and_then(|s| s.to_str().ok())
+                    .unwrap_or("virtual uinput device")
+                    .to_string();
+
+                send_uinput_request(
+                    fd,
+                    vimputti::protocol::UinputRequest::DevSetup {
+                        setup: vimputti::protocol::DeviceSetup {
+                            name,
+                            vendor_id: setup.id[1],
+                            product_id: setup.id[2],
+                            version: setup.id[3],
+                            bustype: setup.id[0],
+                        },
+                    },
+                )
+            } else {
+                0
+            }
+        }
+
+        UI_DEV_CREATE => send_uinput_request(fd, vimputti::protocol::UinputRequest::DevCreate {}),
+
+        UI_DEV_DESTROY => send_uinput_request(fd, vimputti::protocol::UinputRequest::DevDestroy {}),
+
+        UI_SET_MSCBIT | UI_SET_LEDBIT | UI_SET_SNDBIT | UI_SET_FFBIT | UI_SET_SWBIT
+        | UI_SET_PROPBIT | UI_SET_PHYS => {
+            // Ignore these for now
+            0
+        }
+
+        FIONREAD => {
+            // Return 0 bytes available (no data to read from uinput)
+            let ptr: *mut c_int = unsafe { args.arg() };
+            if !ptr.is_null() {
+                unsafe {
+                    *ptr = 0;
+                }
+            }
+            0
+        }
+
+        _ => {
+            debug!("[UINPUT] Unknown ioctl request 0x{:x}", request);
+            0
+        }
+    }
+}
+
+/// Handle write() calls on uinput FDs
+pub unsafe fn handle_uinput_write(
+    fd: RawFd,
+    buf: *const libc::c_void,
+    count: libc::size_t,
+) -> libc::ssize_t {
+    use std::io::Write;
+    use std::slice;
+
+    if buf.is_null() || count == 0 {
+        return 0;
+    }
+
+    let event_size_64 = std::mem::size_of::<vimputti::protocol::LinuxInputEvent>();
+    let event_size_32 = 16;
+
+    // Parse events
+    let events = if count % event_size_64 == 0 {
+        let num_events = count / event_size_64;
+        let events_slice = unsafe {
+            slice::from_raw_parts(
+                buf as *const vimputti::protocol::LinuxInputEvent,
+                num_events,
+            )
+        };
+        events_slice.to_vec()
+    } else if count % event_size_32 == 0 {
+        let num_events = count / event_size_32;
+        #[repr(C, packed)]
+        struct InputEvent32 {
+            tv_sec: i32,
+            tv_usec: i32,
+            type_: u16,
+            code: u16,
+            value: i32,
+        }
+        let events_slice_32 =
+            unsafe { slice::from_raw_parts(buf as *const InputEvent32, num_events) };
+        events_slice_32
+            .iter()
+            .map(|e| vimputti::protocol::LinuxInputEvent {
+                time: vimputti::TimeVal {
+                    tv_sec: e.tv_sec as i64,
+                    tv_usec: e.tv_usec as i64,
+                },
+                event_type: e.type_,
+                code: e.code,
+                value: e.value,
+            })
+            .collect()
+    } else {
+        trace!("uinput write: unknown format size {}", count);
+        return count as libc::ssize_t;
+    };
+
+    // Get connection
+    let connection_arc = {
+        let uinput_fds = UINPUT_FDS.lock();
+        match uinput_fds.get(&fd) {
+            Some(c) => c.clone(),
+            None => return count as libc::ssize_t, // Pretend success
+        }
+    };
+
+    let mut connection = connection_arc.lock();
+    let events_len = events.len();
+
+    // Create WriteEvents request
+    let request = vimputti::protocol::UinputRequest::WriteEvents { events };
+
+    // Serialize and send
+    if let Ok(request_bytes) = request.to_bytes() {
+        trace!(
+            "Sending {} events ({} bytes) - fire and forget",
+            events_len,
+            request_bytes.len()
+        );
+
+        // Just write and return immediately
+        let _ = connection.stream.write_all(&request_bytes);
+        let _ = connection.stream.flush();
+    }
+
+    // Return success immediately without waiting
+    count as libc::ssize_t
 }

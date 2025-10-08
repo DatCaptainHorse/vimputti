@@ -5,17 +5,21 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 mod device;
 mod lock;
+mod netlink;
 mod sysfs;
 mod udev;
+mod uinput;
 
+use crate::manager::netlink::NetlinkBroadcaster;
 pub use device::VirtualDevice;
 pub use lock::LockFile;
 pub use sysfs::SysfsGenerator;
 pub use udev::UdevBroadcaster;
+pub use uinput::UinputEmulator;
 
 pub struct Manager {
     /// Base directory for all vimputti files
@@ -25,13 +29,16 @@ pub struct Manager {
     /// Lock file to prevent multiple managers with same instance
     _lock_file: LockFile,
     /// Registry of active virtual devices
-    devices: Arc<Mutex<HashMap<DeviceId, VirtualDevice>>>,
+    devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
     /// Next device ID to assign
     next_device_id: Arc<Mutex<DeviceId>>,
-    /// Udev event broadcaster
+    /// udev event broadcaster
     udev_broadcaster: Arc<UdevBroadcaster>,
+    /// netlink event broadcaster
+    netlink_broadcaster: Arc<NetlinkBroadcaster>,
+    /// uinput emulator
+    uinput_emulator: Arc<UinputEmulator>,
 }
-
 impl Manager {
     /// Create a new manager instance
     pub fn new(socket_path: impl AsRef<Path>) -> anyhow::Result<Self> {
@@ -50,6 +57,19 @@ impl Manager {
 
         // Create udev broadcaster
         let udev_broadcaster = Arc::new(UdevBroadcaster::new(&base_path)?);
+        // Create netlink broadcaster
+        let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new()?);
+
+        let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let next_device_id = Arc::new(Mutex::new(0));
+
+        // Create uinput emulator with reference to device registry
+        let uinput_emulator = Arc::new(UinputEmulator::new(
+            &base_path,
+            devices.clone(),
+            next_device_id.clone(),
+        )?);
 
         info!("Manager initialized at {}", socket_path.display());
 
@@ -57,9 +77,11 @@ impl Manager {
             base_path,
             control_socket_path: socket_path.to_path_buf(),
             _lock_file: lock_file,
-            devices: Arc::new(Mutex::new(HashMap::new())),
-            next_device_id: Arc::new(Mutex::new(0)),
+            next_device_id,
+            devices,
             udev_broadcaster,
+            netlink_broadcaster,
+            uinput_emulator,
         })
     }
 
@@ -87,18 +109,28 @@ impl Manager {
         );
 
         // Start udev broadcaster
-        let udev_broadcaster = Arc::clone(&self.udev_broadcaster);
+        let udev_broadcaster = self.udev_broadcaster.clone();
         tokio::spawn(async move {
             udev_broadcaster.run().await;
+        });
+
+        // Start uinput emulator
+        let uinput_emulator = self.uinput_emulator.clone();
+        tokio::spawn(async move {
+            if let Err(e) = uinput_emulator.run().await {
+                error!("uinput emulator error: {}", e);
+            }
         });
 
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
-                    let devices = Arc::clone(&self.devices);
-                    let next_device_id = Arc::clone(&self.next_device_id);
+                    let devices = self.devices.clone();
+                    let next_device_id = self.next_device_id.clone();
                     let base_path = self.base_path.clone();
-                    let udev_broadcaster = Arc::clone(&self.udev_broadcaster);
+                    let udev_broadcaster = self.udev_broadcaster.clone();
+                    let netlink_broadcaster = self.netlink_broadcaster.clone();
+                    let uinput_emulator = self.uinput_emulator.clone();
 
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_client(
@@ -107,6 +139,8 @@ impl Manager {
                             next_device_id,
                             base_path,
                             udev_broadcaster,
+                            netlink_broadcaster,
+                            uinput_emulator,
                         )
                         .await
                         {
@@ -124,10 +158,12 @@ impl Manager {
     /// Handle a single client connection
     async fn handle_client(
         stream: UnixStream,
-        devices: Arc<Mutex<HashMap<DeviceId, VirtualDevice>>>,
+        devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
         next_device_id: Arc<Mutex<DeviceId>>,
         base_path: PathBuf,
         udev_broadcaster: Arc<UdevBroadcaster>,
+        netlink_broadcaster: Arc<NetlinkBroadcaster>,
+        uinput_emulator: Arc<UinputEmulator>,
     ) -> anyhow::Result<()> {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
@@ -149,7 +185,7 @@ impl Manager {
                         }
                     };
 
-                    debug!("Received command: {:?}", message.command);
+                    trace!("Received command: {:?}", message.command);
 
                     let response = Self::process_command(
                         message.command,
@@ -157,6 +193,8 @@ impl Manager {
                         &next_device_id,
                         &base_path,
                         &udev_broadcaster,
+                        &netlink_broadcaster,
+                        &uinput_emulator,
                     )
                     .await;
 
@@ -197,10 +235,12 @@ impl Manager {
     /// Process a control command
     async fn process_command(
         command: ControlCommand,
-        devices: &Arc<Mutex<HashMap<DeviceId, VirtualDevice>>>,
+        devices: &Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
         next_device_id: &Arc<Mutex<DeviceId>>,
         base_path: &Path,
         udev_broadcaster: &Arc<UdevBroadcaster>,
+        netlink_broadcaster: &Arc<NetlinkBroadcaster>,
+        uinput_emulator: &Arc<UinputEmulator>,
     ) -> ControlResult {
         match command {
             ControlCommand::CreateDevice { config } => {
@@ -214,13 +254,18 @@ impl Manager {
                 match VirtualDevice::create(device_id, config.clone(), base_path).await {
                     Ok(device) => {
                         let event_node = device.event_node.clone();
-                        devices.lock().await.insert(device_id, device);
+                        devices.lock().await.insert(device_id, Arc::new(device));
 
                         info!("Created device {} as {}", device_id, event_node);
 
                         // Broadcast udev add event (after device is ready)
                         if let Err(e) = udev_broadcaster.broadcast_add(device_id, &config) {
-                            warn!("Failed to broadcast udev add event: {}", e);
+                            debug!("Failed to broadcast udev add event: {}", e);
+                        }
+
+                        // Also broadcast via real netlink
+                        if let Err(e) = netlink_broadcaster.broadcast_add(device_id, &config) {
+                            debug!("Failed to broadcast netlink add event: {}", e);
                         }
 
                         ControlResult::DeviceCreated {
@@ -243,7 +288,14 @@ impl Manager {
                         // Broadcast udev remove event
                         if let Err(e) = udev_broadcaster.broadcast_remove(device_id, &device.config)
                         {
-                            warn!("Failed to broadcast udev remove event: {}", e);
+                            debug!("Failed to broadcast udev remove event: {}", e);
+                        }
+
+                        // Also broadcast via real netlink
+                        if let Err(e) =
+                            netlink_broadcaster.broadcast_remove(device_id, &device.config)
+                        {
+                            debug!("Failed to broadcast netlink remove event: {}", e);
                         }
 
                         ControlResult::DeviceDestroyed
@@ -255,14 +307,35 @@ impl Manager {
             }
 
             ControlCommand::SendInput { device_id, events } => {
-                let devices = devices.lock().await;
-                match devices.get(&device_id) {
-                    Some(device) => match device.send_events(&events).await {
-                        Ok(_) => ControlResult::InputSent,
-                        Err(e) => ControlResult::Error {
-                            message: format!("Failed to send input: {}", e),
-                        },
-                    },
+                let device = {
+                    let devices = devices.lock().await;
+                    devices.get(&device_id).cloned()
+                };
+
+                match device {
+                    Some(device) => {
+                        let send_result = tokio::time::timeout(
+                            std::time::Duration::from_millis(50),
+                            device.send_events(&events),
+                        )
+                        .await;
+
+                        // Also mirror to uinput devices if any
+                        let _ = uinput_emulator
+                            .mirror_to_uinput_devices(device_id, &events)
+                            .await;
+
+                        match send_result {
+                            Ok(Ok(())) => ControlResult::InputSent,
+                            Ok(Err(e)) => ControlResult::Error {
+                                message: format!("Failed to send input: {}", e),
+                            },
+                            Err(_) => {
+                                warn!("Send to device {} timed out", device_id);
+                                ControlResult::InputSent // Pretend success
+                            }
+                        }
+                    }
                     None => ControlResult::Error {
                         message: format!("Device {} not found", device_id),
                     },

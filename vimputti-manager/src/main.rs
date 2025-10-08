@@ -30,9 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let socket_path = if let Some(path) = args.socket {
         path
     } else {
-        // Use default path based on instance number
-        let uid = unsafe { libc::getuid() };
-        PathBuf::from(format!("/run/user/{}/vimputti-{}", uid, args.instance))
+        PathBuf::from("/tmp/vimputti-0")
     };
 
     tracing::info!("Starting vimputti manager");

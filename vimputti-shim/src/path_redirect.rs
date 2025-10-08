@@ -1,18 +1,24 @@
+use crate::ORIGINAL_FUNCTIONS;
+
 pub struct PathRedirector {
     base_path: String,
 }
 
 impl PathRedirector {
     pub fn new() -> Self {
-        let uid = unsafe { libc::getuid() };
-        let base_path = std::env::var("VIMPUTTI_PATH")
-            .unwrap_or_else(|_| format!("/run/user/{}/vimputti", uid));
-
-        Self { base_path }
+        Self {
+            base_path: "/tmp/vimputti".to_string(),
+        }
     }
 
     /// Check if a path should be redirected, and return the new path
     pub fn redirect(&self, path: &str) -> Option<String> {
+        // Redirect /dev/uinput to our fake uinput
+        // We use a special marker so open() knows to return a fake FD
+        if path == "/dev/uinput" {
+            return Some(format!("{}/uinput", self.base_path));
+        }
+
         // Redirect /dev/input/eventX to our device sockets
         if path.starts_with("/dev/input/event") {
             return Some(format!(
@@ -54,6 +60,21 @@ impl PathRedirector {
         // Redirect /sys/devices/virtual/input itself
         if path == "/sys/devices/virtual/input" {
             return Some(format!("{}/sysfs/devices/virtual/input", self.base_path));
+        }
+
+        // Redirect /dev/input directory itself (for inotify)
+        if path == "/dev/input" {
+            return Some(format!("{}/devices", self.base_path));
+        }
+
+        // Redirect /run/udev/data to our udev data
+        if path.starts_with("/run/udev/data/") {
+            let suffix = path.strip_prefix("/run/udev/data/").unwrap();
+            return Some(format!("{}/udev_data/{}", self.base_path, suffix));
+        }
+
+        if path == "/run/udev/data" {
+            return Some(format!("{}/udev_data", self.base_path));
         }
 
         None

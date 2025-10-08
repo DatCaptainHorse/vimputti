@@ -14,59 +14,93 @@ impl SysfsGenerator {
     ) -> Result<()> {
         let event_node = format!("event{}", id);
         let input_node = format!("input{}", id);
-
-        // Create both /sys/class/input/eventX and /sys/devices/virtual/input/inputX
-        Self::create_class_input(&event_node, config, base_path)?;
         Self::create_devices_virtual(&input_node, &event_node, config, base_path)?;
+        Self::create_class_input_symlink(&event_node, &input_node, base_path)?;
+        Self::create_udev_data_file(id, config, base_path)?;
+        Ok(())
+    }
+
+    fn create_class_input_symlink(
+        event_node: &str,
+        input_node: &str,
+        base_path: &Path,
+    ) -> Result<()> {
+        let class_input_dir = base_path.join("sysfs/class/input");
+        std::fs::create_dir_all(&class_input_dir)?;
+
+        let symlink_path = class_input_dir.join(event_node);
+        let target = format!("../../devices/virtual/input/{}/{}", input_node, event_node);
+
+        // Remove if exists
+        let _ = std::fs::remove_file(&symlink_path);
+        let _ = std::fs::remove_dir_all(&symlink_path);
+
+        // Create symlink
+        std::os::unix::fs::symlink(&target, &symlink_path)?;
+
+        tracing::debug!("Created symlink: {} -> {}", symlink_path.display(), target);
 
         Ok(())
     }
 
-    /// Create /sys/class/input/eventX structure
-    fn create_class_input(event_node: &str, config: &DeviceConfig, base_path: &Path) -> Result<()> {
-        let sysfs_base = base_path.join("sysfs/class/input").join(event_node);
+    /// Create /sys/devices/virtual/input/inputX structure
+    fn create_devices_virtual(
+        input_node: &str,
+        event_node: &str,
+        config: &DeviceConfig,
+        base_path: &Path,
+    ) -> Result<()> {
+        let input_base = base_path
+            .join("sysfs/devices/virtual/input")
+            .join(input_node);
 
-        // Create directory structure - make sure ALL directories exist
-        std::fs::create_dir_all(sysfs_base.join("device/id"))?;
-        std::fs::create_dir_all(sysfs_base.join("device/capabilities"))?;
+        let event_path = input_base.join(event_node);
 
-        // Write device name
-        std::fs::write(sysfs_base.join("device/name"), &config.name)?;
+        // Create ALL directory structure
+        std::fs::create_dir_all(&input_base)?;
+        std::fs::create_dir_all(&event_path)?;
+        std::fs::create_dir_all(input_base.join("id"))?;
+        std::fs::create_dir_all(input_base.join("capabilities"))?;
 
-        // Write phys
+        // Write input device properties
+        std::fs::write(input_base.join("name"), format!("{}\n", config.name))?;
         std::fs::write(
-            sysfs_base.join("device/phys"),
+            input_base.join("phys"),
             format!("vimputti-{}\n", event_node),
         )?;
+        std::fs::write(input_base.join("uniq"), "\n")?;
 
-        // Write uniq
-        std::fs::write(sysfs_base.join("device/uniq"), "")?;
-
-        // Write device IDs
+        // Write IDs
         std::fs::write(
-            sysfs_base.join("device/id/bustype"),
+            input_base.join("id/bustype"),
             format!("{:04x}\n", config.bustype as u16),
         )?;
         std::fs::write(
-            sysfs_base.join("device/id/vendor"),
+            input_base.join("id/vendor"),
             format!("{:04x}\n", config.vendor_id),
         )?;
         std::fs::write(
-            sysfs_base.join("device/id/product"),
+            input_base.join("id/product"),
             format!("{:04x}\n", config.product_id),
         )?;
         std::fs::write(
-            sysfs_base.join("device/id/version"),
+            input_base.join("id/version"),
             format!("{:04x}\n", config.version),
         )?;
 
-        // Write capabilities (sysfs_base/device/capabilities already exists)
-        Self::write_capabilities(&sysfs_base.join("device"), config)?;
+        // Write capabilities
+        Self::write_capabilities(&input_base, config)?;
 
-        // Write properties
-        std::fs::write(sysfs_base.join("device/properties"), "0\n")?;
+        // Write modalias
+        std::fs::write(
+            input_base.join("modalias"),
+            format!(
+                "input:b{:04X}v{:04X}p{:04X}e{:04X}\n",
+                config.bustype as u16, config.vendor_id, config.product_id, config.version
+            ),
+        )?;
 
-        // Write uevent file
+        // Write uevent
         let uevent_content = format!(
             "PRODUCT={:x}/{:x}/{:x}/{:x}\n\
              NAME=\"{}\"\n\
@@ -85,70 +119,89 @@ impl SysfsGenerator {
             Self::calculate_key_bits(config),
             Self::calculate_abs_bits(config),
         );
-        std::fs::write(sysfs_base.join("device/uevent"), uevent_content)?;
+        std::fs::write(input_base.join("uevent"), uevent_content)?;
+
+        // Event node properties
+        std::fs::write(
+            event_path.join("dev"),
+            format!("13:{}\n", event_node.trim_start_matches("event")),
+        )?;
+
+        // Create subsystem symlink
+        let subsystem_link = event_path.join("subsystem");
+        let _ = std::fs::remove_file(&subsystem_link);
+        std::os::unix::fs::symlink("../../../../class/input", &subsystem_link)?;
+
+        // Create device symlink: eventX/device -> ..
+        let device_link = event_path.join("device");
+        let _ = std::fs::remove_file(&device_link);
+        let _ = std::fs::remove_dir_all(&device_link); // Remove if it's a directory
+        std::os::unix::fs::symlink("..", &device_link)?;
+
+        // Write event uevent
+        let event_uevent = format!(
+            "MAJOR=13\n\
+             MINOR={}\n\
+             DEVNAME=input/{}\n",
+            event_node.trim_start_matches("event"),
+            event_node
+        );
+        std::fs::write(event_path.join("uevent"), event_uevent)?;
 
         Ok(())
     }
-
-    /// Create /sys/devices/virtual/input/inputX structure
-    fn create_devices_virtual(
-        input_node: &str,
-        event_node: &str,
+    pub fn create_udev_data_file(
+        id: DeviceId,
         config: &DeviceConfig,
         base_path: &Path,
     ) -> Result<()> {
-        let device_base = base_path
-            .join("sysfs/devices/virtual/input")
-            .join(input_node);
+        let minor = 64 + id; // event0 = minor 64, event1 = 65, etc.
+        let data_file = format!("c13:{}", minor); // char device major 13
 
-        // Create directory structure - make sure ALL directories exist
-        std::fs::create_dir_all(device_base.join("id"))?;
-        std::fs::create_dir_all(device_base.join("capabilities"))?;
-        std::fs::create_dir_all(device_base.join(event_node))?;
+        let udev_data_dir = base_path.join("udev_data");
+        std::fs::create_dir_all(&udev_data_dir)?;
 
-        // Write device properties
-        std::fs::write(device_base.join("name"), &config.name)?;
-        std::fs::write(
-            device_base.join("phys"),
-            format!("vimputti-{}\n", event_node),
-        )?;
-        std::fs::write(device_base.join("uniq"), "")?;
+        // Format: E:KEY=VALUE lines
+        let mut content = String::new();
+        content.push_str("E:ID_INPUT=1\n");
+        content.push_str("E:ID_INPUT_JOYSTICK=1\n");
+        content.push_str(&format!("E:ID_VENDOR_ID={:04x}\n", config.vendor_id));
+        content.push_str(&format!("E:ID_MODEL_ID={:04x}\n", config.product_id));
 
-        // Write IDs
-        std::fs::write(
-            device_base.join("id/bustype"),
-            format!("{:04x}\n", config.bustype as u16),
-        )?;
-        std::fs::write(
-            device_base.join("id/vendor"),
-            format!("{:04x}\n", config.vendor_id),
-        )?;
-        std::fs::write(
-            device_base.join("id/product"),
-            format!("{:04x}\n", config.product_id),
-        )?;
-        std::fs::write(
-            device_base.join("id/version"),
-            format!("{:04x}\n", config.version),
-        )?;
+        let bus_name = match config.bustype {
+            BusType::Usb => "usb",
+            BusType::Bluetooth => "bluetooth",
+            BusType::Virtual => "virtual",
+        };
+        content.push_str(&format!("E:ID_BUS={}\n", bus_name));
 
-        // Write capabilities (device_base/capabilities already exists)
-        Self::write_capabilities(&device_base, config)?;
+        // Vendor info
+        let vendor_name = match config.vendor_id {
+            0x045e => "Microsoft",
+            0x054c => "Sony",
+            0x057e => "Nintendo",
+            _ => "Unknown",
+        };
+        content.push_str(&format!("E:ID_VENDOR_ENC={}\n", vendor_name));
+        content.push_str(&format!("E:ID_VENDOR_FROM_DATABASE={}\n", vendor_name));
 
-        // Write modalias
-        std::fs::write(
-            device_base.join("modalias"),
-            format!(
-                "input:b{:04X}v{:04X}p{:04X}e{:04X}\n",
-                config.bustype as u16, config.vendor_id, config.product_id, config.version
-            ),
-        )?;
+        // Model info
+        content.push_str(&format!(
+            "E:ID_MODEL_ENC={}\n",
+            config.name.replace(' ', "\\x20")
+        ));
+        content.push_str(&format!("E:ID_MODEL_FROM_DATABASE={}\n", config.name));
 
-        // Create event node subdirectory with minimal info
-        std::fs::write(
-            device_base.join(event_node).join("dev"),
-            format!("13:{}\n", event_node.trim_start_matches("event")),
-        )?;
+        // Path info
+        content.push_str(&format!("E:ID_PATH=platform-vimputti-event{}\n", id));
+        content.push_str(&format!("E:ID_PATH_TAG=platform-vimputti-event{}\n", id));
+        content.push_str(&format!("E:ID_SERIAL=vimputti_event{}\n", id));
+
+        // Tags
+        content.push_str("E:TAGS=:uaccess:\n");
+        content.push_str("G:uaccess\n"); // ACL tag
+
+        std::fs::write(udev_data_dir.join(&data_file), content)?;
 
         Ok(())
     }
@@ -268,6 +321,7 @@ impl SysfsGenerator {
     pub fn remove_device_files(id: DeviceId, base_path: &Path) -> Result<()> {
         let event_node = format!("event{}", id);
         let input_node = format!("input{}", id);
+        let minor = 64 + id;
 
         // Remove class/input/eventX
         let _ = std::fs::remove_dir_all(base_path.join("sysfs/class/input").join(&event_node));
@@ -278,6 +332,9 @@ impl SysfsGenerator {
                 .join("sysfs/devices/virtual/input")
                 .join(&input_node),
         );
+
+        // Remove udev data files
+        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c13:{}", minor)));
 
         Ok(())
     }

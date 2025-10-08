@@ -9,8 +9,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Starting udev monitor test...");
 
     // Connect to udev socket
-    let uid = unsafe { libc::getuid() };
-    let udev_socket = format!("/run/user/{}/vimputti/udev", uid);
+    let udev_socket = "/tmp/vimputti-0";
 
     println!("Connecting to udev socket: {}", udev_socket);
     let stream = UnixStream::connect(&udev_socket).await?;

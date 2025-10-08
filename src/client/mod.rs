@@ -43,9 +43,7 @@ impl VimputtiClient {
 
     /// Connect to default vimputti manager (instance 0)
     pub async fn connect_default() -> Result<Self> {
-        let uid = unsafe { libc::getuid() };
-        let socket_path = format!("/run/user/{}/vimputti-0", uid);
-        Self::connect(socket_path).await
+        Self::connect("/tmp/vimputti-0").await
     }
 
     /// Ping the manager to check if it's alive
