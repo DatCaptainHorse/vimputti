@@ -1,4 +1,3 @@
-use crate::manager::UdevBroadcaster;
 use crate::manager::udev::{UdevAction, UdevDeviceInfo, UdevEvent};
 use crate::{BusType, DeviceConfig, DeviceId};
 use anyhow::Result;
@@ -63,10 +62,10 @@ impl NetlinkBroadcaster {
 
         let message_bytes = message.as_slice();
 
-        // Send to GROUP_UDEV (2) if kernel events not allowed, otherwise to both kernel and udev
+        // Send to GROUP_UDEV (2) if kernel events not allowed, otherwise to kernel
         let mut sa: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         sa.nl_family = 16; // AF_NETLINK
-        sa.nl_groups = if self.allow_kernel_events { 1 | 2 } else { 2 };
+        sa.nl_groups = if self.allow_kernel_events { 1 } else { 2 };
         sa.nl_pid = 0;
 
         let iov = libc::iovec {

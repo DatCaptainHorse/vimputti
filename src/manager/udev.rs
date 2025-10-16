@@ -152,7 +152,7 @@ impl UdevBroadcaster {
                     Ok(0) => {
                         break;
                     }
-                    Ok(n) => {
+                    Ok(_n) => {
                         // Just discard - libudev sending filter updates
                     }
                     Err(e) => {

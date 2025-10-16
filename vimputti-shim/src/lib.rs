@@ -72,6 +72,9 @@ struct OriginalFunctions {
     inotify_init: Option<unsafe extern "C" fn() -> c_int>,
     inotify_init1: Option<unsafe extern "C" fn(c_int) -> c_int>,
     inotify_add_watch: Option<unsafe extern "C" fn(c_int, *const c_char, u32) -> c_int>,
+    socket: Option<unsafe extern "C" fn(c_int, c_int, c_int) -> c_int>,
+    connect: Option<unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int>,
+    bind: Option<unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int>,
 }
 impl OriginalFunctions {
     fn new() -> Self {
@@ -109,6 +112,9 @@ impl OriginalFunctions {
                 inotify_init: Self::get_original("inotify_init"),
                 inotify_init1: Self::get_original("inotify_init1"),
                 inotify_add_watch: Self::get_original("inotify_add_watch"),
+                socket: Self::get_original("socket"),
+                connect: Self::get_original("connect"),
+                bind: Self::get_original("bind"),
             }
         }
     }
@@ -133,7 +139,6 @@ fn init_shim() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
-        .with_target(false)
         .init();
 }
 
@@ -1177,6 +1182,99 @@ pub unsafe extern "C" fn inotify_add_watch(fd: c_int, pathname: *const c_char, m
 
     if let Some(orig) = ORIGINAL_FUNCTIONS.inotify_add_watch {
         return unsafe { orig(fd, pathname, mask) };
+    }
+    -1
+}
+
+/// Intercept socket() to track Unix domain sockets
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn socket(domain: c_int, type_: c_int, protocol: c_int) -> c_int {
+    if let Some(orig_socket) = ORIGINAL_FUNCTIONS.socket {
+        let fd = unsafe { orig_socket(domain, type_, protocol) };
+
+        // Track Unix domain sockets (AF_UNIX = 1)
+        if fd >= 0 && domain == 1 {
+            syscalls::track_unix_socket(fd);
+        }
+
+        return fd;
+    }
+    -1
+}
+
+/// Intercept connect() to redirect /run/udev/control
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn connect(
+    sockfd: c_int,
+    addr: *const libc::sockaddr,
+    addrlen: libc::socklen_t,
+) -> c_int {
+    // Check if this is a Unix domain socket we're tracking
+    if syscalls::is_tracked_unix_socket(sockfd) && !addr.is_null() {
+        let sa_family = unsafe { (*addr).sa_family };
+        if sa_family == 1 {
+            // AF_UNIX
+            let unix_addr = addr as *const libc::sockaddr_un;
+            let path_bytes = unsafe { &(*unix_addr).sun_path };
+
+            // Find null terminator
+            let path_len = path_bytes.iter().position(|&b| b == 0).unwrap_or(108);
+            let path_slice = &path_bytes[..path_len];
+            let path_as_u8: Vec<u8> = path_slice.iter().map(|&c| c as u8).collect();
+
+            if let Ok(path_str) = std::str::from_utf8(&path_as_u8) {
+                if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
+                    debug!("connect: {} -> {}", path_str, redirected);
+
+                    // Create new sockaddr_un with redirected path
+                    let mut new_addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+                    new_addr.sun_family = 1; // AF_UNIX
+
+                    // Convert redirected path to c_char array
+                    let new_path = CString::new(redirected).unwrap();
+                    let new_path_bytes = new_path.as_bytes_with_nul();
+                    for (i, &byte) in new_path_bytes.iter().enumerate() {
+                        if i < new_addr.sun_path.len() {
+                            new_addr.sun_path[i] = byte as c_char;
+                        }
+                    }
+
+                    if let Some(orig_connect) = ORIGINAL_FUNCTIONS.connect {
+                        let result = unsafe {
+                            orig_connect(
+                                sockfd,
+                                &new_addr as *const _ as *const libc::sockaddr,
+                                size_of::<libc::sockaddr_un>() as libc::socklen_t,
+                            )
+                        };
+
+                        // Track this as a udev monitor fd if connection succeeded
+                        if result == 0 && path_str == "/run/udev/control" {
+                            syscalls::register_udev_monitor_fd(sockfd);
+                        }
+
+                        return result;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(orig_connect) = ORIGINAL_FUNCTIONS.connect {
+        return unsafe { orig_connect(sockfd, addr, addrlen) };
+    }
+    -1
+}
+
+/// Intercept bind() in case someone tries to create /run/udev/control
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bind(
+    sockfd: c_int,
+    addr: *const libc::sockaddr,
+    addrlen: libc::socklen_t,
+) -> c_int {
+    if let Some(orig_bind) = ORIGINAL_FUNCTIONS.bind {
+        return unsafe { orig_bind(sockfd, addr, addrlen) };
     }
     -1
 }

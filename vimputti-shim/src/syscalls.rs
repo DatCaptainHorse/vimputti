@@ -16,6 +16,8 @@ lazy_static::lazy_static! {
     static ref UINPUT_FDS: Mutex<HashMap<RawFd, Arc<Mutex<UinputConnection>>>> = Mutex::new(HashMap::new());
     // Track which FDs are udev connections
     static ref UDEV_MONITOR_FDS: Mutex<HashSet<RawFd>> = Mutex::new(HashSet::new());
+    // Track Unix domain sockets (to intercept connect() calls for netlink)
+    static ref UNIX_SOCKET_FDS: Mutex<HashSet<RawFd>> = Mutex::new(HashSet::new());
 }
 
 struct UinputConnection {
@@ -545,6 +547,8 @@ unsafe fn handle_evdev_ioctl(
 pub fn close_virtual_device(fd: RawFd) {
     VIRTUAL_DEVICE_FDS.lock().remove(&fd);
     UINPUT_FDS.lock().remove(&fd);
+    UDEV_MONITOR_FDS.lock().remove(&fd);
+    UNIX_SOCKET_FDS.lock().remove(&fd);
 }
 
 // Helper to send uinput request and get response
@@ -862,4 +866,17 @@ pub unsafe fn handle_uinput_write(
 
     // Return success immediately without waiting
     count as libc::ssize_t
+}
+
+/* netlink unix sockets */
+
+/// Track that an FD is a Unix domain socket
+pub fn track_unix_socket(fd: RawFd) {
+    UNIX_SOCKET_FDS.lock().insert(fd);
+    trace!("Tracked Unix socket fd: {}", fd);
+}
+
+/// Check if FD is a tracked Unix socket
+pub fn is_tracked_unix_socket(fd: RawFd) -> bool {
+    UNIX_SOCKET_FDS.lock().contains(&fd)
 }

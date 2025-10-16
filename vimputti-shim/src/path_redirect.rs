@@ -77,6 +77,11 @@ impl PathRedirector {
             return Some(format!("{}/udev_data", self.base_path));
         }
 
+        // Redirect /run/udev/control to our udev socket
+        if path == "/run/udev/control" {
+            return Some(format!("{}/udev", self.base_path));
+        }
+
         None
     }
 }
