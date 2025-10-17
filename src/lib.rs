@@ -10,8 +10,8 @@ pub mod templates;
 
 // Re-export commonly used types
 pub use protocol::{
-    Axis, AxisConfig, BusType, Button, DeviceConfig, DeviceId, DeviceInfo, EV_ABS, EV_KEY, EV_REL,
-    EV_SYN, InputEvent, LinuxAbsEvent, LinuxJsEvent, TimeVal,
+    Axis, AxisConfig, BusType, Button, DeviceConfig, DeviceId, DeviceInfo, EV_ABS, EV_FF, EV_KEY,
+    EV_REL, EV_SYN, InputEvent, LinuxAbsEvent, LinuxJsEvent, TimeVal,
 };
 
 pub use client::{VimputtiClient, VirtualController};

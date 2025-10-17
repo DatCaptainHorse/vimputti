@@ -278,7 +278,6 @@ impl Manager {
                     },
                 }
             }
-
             ControlCommand::DestroyDevice { device_id } => {
                 let device = devices.lock().await.remove(&device_id);
                 match device {
@@ -305,7 +304,6 @@ impl Manager {
                     },
                 }
             }
-
             ControlCommand::SendInput { device_id, events } => {
                 let device = {
                     let devices = devices.lock().await;
@@ -341,7 +339,6 @@ impl Manager {
                     },
                 }
             }
-
             ControlCommand::ListDevices => {
                 let devices = devices.lock().await;
                 let device_list: Vec<DeviceInfo> = devices
@@ -357,7 +354,6 @@ impl Manager {
                     .collect();
                 ControlResult::DeviceList(device_list)
             }
-
             ControlCommand::Ping => ControlResult::Pong,
         }
     }

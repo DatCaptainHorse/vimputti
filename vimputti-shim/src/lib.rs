@@ -524,6 +524,11 @@ pub unsafe extern "C" fn write(
         return unsafe { syscalls::handle_uinput_write(fd, buf, count) };
     }
 
+    // Check if this is a virtual device FD
+    if syscalls::is_virtual_device_fd(fd) {
+        return unsafe { syscalls::handle_virtual_device_write(fd, buf, count) };
+    }
+
     if let Some(orig_write) = ORIGINAL_FUNCTIONS.write {
         return unsafe { orig_write(fd, buf, count) };
     }

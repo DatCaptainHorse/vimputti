@@ -16,6 +16,19 @@ pub(crate) struct ClientInner {
     stream: Mutex<UnixStream>,
     socket_path: String,
 }
+impl ClientInner {
+    pub(crate) fn get_base_path(&self) -> String {
+        // Manager creates base_path as socket_path.parent()/vimputti
+        // So for socket /tmp/vimputti-0, base is /tmp/vimputti
+        let socket_path = Path::new(&self.socket_path);
+        socket_path
+            .parent()
+            .unwrap_or_else(|| Path::new("/tmp"))
+            .join("vimputti")
+            .to_string_lossy()
+            .to_string()
+    }
+}
 
 /// Client for communicating with the vimputti manager
 pub struct VimputtiClient {

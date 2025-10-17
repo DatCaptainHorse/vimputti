@@ -17,6 +17,25 @@ lazy_static::lazy_static! {
     static ref UDEV_MONITOR_FDS: Mutex<HashSet<RawFd>> = Mutex::new(HashSet::new());
     // Track Unix domain sockets (to intercept connect() calls for netlink)
     static ref UNIX_SOCKET_FDS: Mutex<HashSet<RawFd>> = Mutex::new(HashSet::new());
+    // Track uploaded force feedback effects per device FD
+    static ref FF_EFFECTS: Mutex<HashMap<RawFd, HashMap<i16, FfEffectInfo>>> = Mutex::new(HashMap::new());
+}
+
+#[derive(Clone, Debug)]
+struct FfEffectInfo {
+    effect_type: u16,
+    strong_magnitude: u16,
+    weak_magnitude: u16,
+    duration_ms: u16,
+}
+
+#[repr(C, packed)]
+struct InputEvent32 {
+    tv_sec: i32,
+    tv_usec: i32,
+    type_: u16,
+    code: u16,
+    value: i32,
 }
 
 struct UinputConnection {
@@ -310,6 +329,8 @@ unsafe fn handle_evdev_ioctl(
 ) -> c_int {
     const EVIOCGVERSION: c_uint = 0x80044501;
     const EVIOCGID: c_uint = 0x80084502;
+    // for uploading force feedback effect
+    const EVIOCSFF: c_uint = 0x40304580;
 
     // evdev ioctl request number ranges
     const EVIOCG_TYPE_MASK: u32 = 0xFF;
@@ -351,7 +372,6 @@ unsafe fn handle_evdev_ioctl(
             }
             0
         }
-
         EVIOCGID => {
             #[repr(C)]
             struct InputId {
@@ -374,7 +394,89 @@ unsafe fn handle_evdev_ioctl(
             }
             0
         }
+        EVIOCSFF => {
+            #[repr(C)]
+            struct FfEffect {
+                type_: u16,
+                id: i16,
+                direction: u16,
+                trigger: FfTrigger,
+                replay: FfReplay,
+                u: FfEffectUnion,
+            }
 
+            #[repr(C)]
+            struct FfTrigger {
+                button: u16,
+                interval: u16,
+            }
+
+            #[repr(C)]
+            struct FfReplay {
+                length: u16, // Duration in ms
+                delay: u16,
+            }
+
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            union FfEffectUnion {
+                rumble: FfRumbleEffect,
+                _padding: [u8; 44],
+            }
+
+            #[repr(C)]
+            #[derive(Copy, Clone)]
+            struct FfRumbleEffect {
+                strong_magnitude: u16,
+                weak_magnitude: u16,
+            }
+
+            let ptr: *mut FfEffect = unsafe { args.arg() };
+            if !ptr.is_null() {
+                let effect = unsafe { &mut *ptr };
+                debug!(
+                    "EVIOCSFF: Uploading FF effect type=0x{:x}, id={}, duration={}ms",
+                    effect.type_, effect.id, effect.replay.length
+                );
+
+                // Assign an effect ID if it's -1 (new effect)
+                let effect_id = if effect.id == -1 {
+                    // Simple: use a counter or just use 0 for single effect
+                    effect.id = 0;
+                    0
+                } else {
+                    effect.id
+                };
+
+                // Store effect info
+                if effect.type_ == protocol::FF_RUMBLE {
+                    let rumble = unsafe { effect.u.rumble };
+                    let effect_info = FfEffectInfo {
+                        effect_type: effect.type_,
+                        strong_magnitude: rumble.strong_magnitude,
+                        weak_magnitude: rumble.weak_magnitude,
+                        duration_ms: effect.replay.length,
+                    };
+
+                    FF_EFFECTS
+                        .lock()
+                        .entry(_fd)
+                        .or_insert_with(HashMap::new)
+                        .insert(effect_id, effect_info.clone());
+
+                    debug!(
+                        "Stored rumble effect {}: strong={}, weak={}, duration={}ms",
+                        effect_id,
+                        rumble.strong_magnitude,
+                        rumble.weak_magnitude,
+                        effect.replay.length
+                    );
+                }
+
+                return 0;
+            }
+            -1
+        }
         // EVIOCGNAME - get device name
         _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x06 => {
             let ptr: *mut u8 = unsafe { args.arg() };
@@ -392,7 +494,6 @@ unsafe fn handle_evdev_ioctl(
                 -1
             }
         }
-
         // EVIOCGPHYS - get physical location
         _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x07 => {
             let ptr: *mut u8 = unsafe { args.arg() };
@@ -409,7 +510,6 @@ unsafe fn handle_evdev_ioctl(
                 -1
             }
         }
-
         // EVIOCGUNIQ - get unique identifier
         _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x08 => {
             let ptr: *mut u8 = unsafe { args.arg() };
@@ -424,7 +524,6 @@ unsafe fn handle_evdev_ioctl(
                 -1
             }
         }
-
         // EVIOCGPROP - get device properties
         _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x09 => {
             let ptr: *mut u8 = unsafe { args.arg() };
@@ -439,7 +538,6 @@ unsafe fn handle_evdev_ioctl(
                 -1
             }
         }
-
         // EVIOCGBIT(ev, len) - get event bits for specific event type
         _ if extract_request_type(request) == EVDEV_IOC_TYPE
             && request_nr >= EVIOCGBIT_NR_BASE
@@ -483,6 +581,18 @@ unsafe fn handle_evdev_ioctl(
                             }
                         }
                     }
+                    EV_FF => {
+                        // Advertise force feedback capabilities
+                        let ff_rumble_code = protocol::FF_RUMBLE as usize;
+                        let byte_index = ff_rumble_code / 8;
+                        let bit_index = ff_rumble_code % 8;
+
+                        if len > byte_index {
+                            unsafe {
+                                *ptr.add(byte_index) |= 1 << bit_index;
+                            }
+                        }
+                    }
                     _ => {
                         debug!("ioctl EVIOCGBIT({}): unknown type", ev_type);
                     }
@@ -492,7 +602,6 @@ unsafe fn handle_evdev_ioctl(
                 -1
             }
         }
-
         // EVIOCGABS(abs) - get abs axis info
         _ if extract_request_type(request) == EVDEV_IOC_TYPE
             && request_nr >= EVIOCGABS_NR_BASE
@@ -542,12 +651,146 @@ unsafe fn handle_evdev_ioctl(
     }
 }
 
+/// Handle write() calls on virtual device FDs (for force feedback events)
+pub unsafe fn handle_virtual_device_write(
+    fd: RawFd,
+    buf: *const libc::c_void,
+    count: libc::size_t,
+) -> libc::ssize_t {
+    use std::slice;
+
+    if buf.is_null() || count == 0 {
+        return 0;
+    }
+
+    // Get device info to find the feedback socket path
+    let device_info = {
+        let device_fds = VIRTUAL_DEVICE_FDS.lock();
+        device_fds.get(&fd).cloned()
+    };
+
+    let _device_info = match device_info {
+        Some(info) => info,
+        None => {
+            // Not in our tracking, pass through
+            return count as libc::ssize_t;
+        }
+    };
+
+    // Parse events
+    let event_size_64 = size_of::<protocol::LinuxInputEvent>();
+    let event_size_32 = 16;
+
+    let events = if count % event_size_64 == 0 {
+        let num_events = count / event_size_64;
+        let events_slice =
+            unsafe { slice::from_raw_parts(buf as *const protocol::LinuxInputEvent, num_events) };
+        events_slice.to_vec()
+    } else if count % event_size_32 == 0 {
+        let num_events = count / event_size_32;
+        let events_slice_32 =
+            unsafe { slice::from_raw_parts(buf as *const InputEvent32, num_events) };
+        events_slice_32
+            .iter()
+            .map(|e| protocol::LinuxInputEvent {
+                time: TimeVal {
+                    tv_sec: e.tv_sec as i64,
+                    tv_usec: e.tv_usec as i64,
+                },
+                event_type: e.type_,
+                code: e.code,
+                value: e.value,
+            })
+            .collect()
+    } else {
+        trace!("virtual device write: unknown format size {}", count);
+        return count as libc::ssize_t;
+    };
+
+    // Check for FF events and translate them
+    let ff_effects_map = FF_EFFECTS.lock();
+    let device_effects = ff_effects_map.get(&fd);
+
+    for event in events.iter() {
+        if event.event_type == EV_FF {
+            let effect_id = event.code as i16;
+            let play = event.value > 0;
+
+            trace!("FF event: effect_id={}, play={}", effect_id, play);
+
+            if let Some(effects) = device_effects {
+                if let Some(effect_info) = effects.get(&effect_id) {
+                    // Create a new event with the actual rumble data encoded
+                    // send multiple events, one for magnitudes, one for duration
+                    if play {
+                        // Rumble magnitudes (code=FF_RUMBLE, value=strong<<16|weak)
+                        let magnitude_event = protocol::LinuxInputEvent {
+                            time: event.time,
+                            event_type: EV_FF,
+                            code: protocol::FF_RUMBLE,
+                            value: ((effect_info.strong_magnitude as i32) << 16)
+                                | (effect_info.weak_magnitude as i32),
+                        };
+
+                        // Duration (code=FF_RUMBLE+1, value=duration_ms)
+                        let duration_event = protocol::LinuxInputEvent {
+                            time: event.time,
+                            event_type: EV_FF,
+                            code: protocol::FF_RUMBLE + 1, // Use next code for duration
+                            value: effect_info.duration_ms as i32,
+                        };
+
+                        let magnitude_bytes = magnitude_event.to_bytes();
+                        let duration_bytes = duration_event.to_bytes();
+
+                        // Write both events
+                        if let Some(orig_write) = crate::ORIGINAL_FUNCTIONS.write {
+                            unsafe {
+                                orig_write(
+                                    fd,
+                                    magnitude_bytes.as_ptr() as *const _,
+                                    magnitude_bytes.len(),
+                                );
+                                orig_write(
+                                    fd,
+                                    duration_bytes.as_ptr() as *const _,
+                                    duration_bytes.len(),
+                                );
+                            };
+                        }
+                    } else {
+                        // Stop event
+                        let stop_event = protocol::LinuxInputEvent {
+                            time: event.time,
+                            event_type: EV_FF,
+                            code: protocol::FF_RUMBLE,
+                            value: 0, // 0 means stop
+                        };
+
+                        let stop_bytes = stop_event.to_bytes();
+                        if let Some(orig_write) = crate::ORIGINAL_FUNCTIONS.write {
+                            unsafe {
+                                orig_write(fd, stop_bytes.as_ptr() as *const _, stop_bytes.len())
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    drop(ff_effects_map);
+
+    count as libc::ssize_t
+}
+
 /// Clean up when a virtual device FD is closed
 pub fn close_virtual_device(fd: RawFd) {
     VIRTUAL_DEVICE_FDS.lock().remove(&fd);
     UINPUT_FDS.lock().remove(&fd);
     UDEV_MONITOR_FDS.lock().remove(&fd);
     UNIX_SOCKET_FDS.lock().remove(&fd);
+    FF_EFFECTS.lock().remove(&fd);
 }
 
 // Helper to send uinput request and get response
@@ -793,35 +1036,23 @@ pub unsafe fn handle_uinput_write(
         return 0;
     }
 
-    let event_size_64 = std::mem::size_of::<vimputti::protocol::LinuxInputEvent>();
+    let event_size_64 = size_of::<protocol::LinuxInputEvent>();
     let event_size_32 = 16;
 
     // Parse events
     let events = if count % event_size_64 == 0 {
         let num_events = count / event_size_64;
-        let events_slice = unsafe {
-            slice::from_raw_parts(
-                buf as *const vimputti::protocol::LinuxInputEvent,
-                num_events,
-            )
-        };
+        let events_slice =
+            unsafe { slice::from_raw_parts(buf as *const protocol::LinuxInputEvent, num_events) };
         events_slice.to_vec()
     } else if count % event_size_32 == 0 {
         let num_events = count / event_size_32;
-        #[repr(C, packed)]
-        struct InputEvent32 {
-            tv_sec: i32,
-            tv_usec: i32,
-            type_: u16,
-            code: u16,
-            value: i32,
-        }
         let events_slice_32 =
             unsafe { slice::from_raw_parts(buf as *const InputEvent32, num_events) };
         events_slice_32
             .iter()
-            .map(|e| vimputti::protocol::LinuxInputEvent {
-                time: vimputti::TimeVal {
+            .map(|e| protocol::LinuxInputEvent {
+                time: TimeVal {
                     tv_sec: e.tv_sec as i64,
                     tv_usec: e.tv_usec as i64,
                 },
@@ -840,7 +1071,7 @@ pub unsafe fn handle_uinput_write(
         let uinput_fds = UINPUT_FDS.lock();
         match uinput_fds.get(&fd) {
             Some(c) => c.clone(),
-            None => return count as libc::ssize_t, // Pretend success
+            None => return count as libc::ssize_t,
         }
     };
 
@@ -848,7 +1079,7 @@ pub unsafe fn handle_uinput_write(
     let events_len = events.len();
 
     // Create WriteEvents request
-    let request = vimputti::protocol::UinputRequest::WriteEvents { events };
+    let request = protocol::UinputRequest::WriteEvents { events };
 
     // Serialize and send
     if let Ok(request_bytes) = request.to_bytes() {
@@ -863,7 +1094,6 @@ pub unsafe fn handle_uinput_write(
         let _ = connection.stream.flush();
     }
 
-    // Return success immediately without waiting
     count as libc::ssize_t
 }
 

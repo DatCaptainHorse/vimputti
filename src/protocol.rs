@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+// Linux input event type constants
+pub const EV_SYN: u16 = 0x00;
+pub const EV_KEY: u16 = 0x01;
+pub const EV_REL: u16 = 0x02;
+pub const EV_ABS: u16 = 0x03;
+pub const EV_FF: u16 = 0x15;
+
+pub const FF_RUMBLE: u16 = 0x50;
+
+pub const SYN_REPORT: u16 = 0;
+
 /// Unique identifier for a virtual device
 pub type DeviceId = u64;
 
@@ -335,14 +346,6 @@ impl TimeVal {
     }
 }
 
-// Linux input event type constants
-pub const EV_SYN: u16 = 0x00;
-pub const EV_KEY: u16 = 0x01;
-pub const EV_REL: u16 = 0x02;
-pub const EV_ABS: u16 = 0x03;
-
-pub const SYN_REPORT: u16 = 0;
-
 /* uinput structures */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceSetup {
@@ -410,4 +413,18 @@ impl UinputResponse {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FeedbackEvent {
+    /// Simple rumble
+    Rumble {
+        strong_magnitude: u16, // 0-65535
+        weak_magnitude: u16,   // 0-65535
+        duration_ms: u16,      // Duration in milliseconds (0 = infinite/until stopped)
+    },
+    /// Stop rumble
+    RumbleStop,
+    /// Raw event
+    Raw { code: u16, value: i32 },
 }

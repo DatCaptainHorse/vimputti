@@ -2,10 +2,11 @@ use crate::manager::sysfs::SysfsGenerator;
 use crate::protocol::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
-use tracing::{error, info, trace};
+use tracing::{debug, error, info, trace};
 
 pub struct VirtualDevice {
     pub id: DeviceId,
@@ -15,8 +16,10 @@ pub struct VirtualDevice {
     socket_path: PathBuf,
     joystick_socket_path: Option<PathBuf>,
     base_path: PathBuf,
-    clients: Arc<Mutex<Vec<UnixStream>>>,
-    joystick_clients: Arc<Mutex<Vec<UnixStream>>>,
+    clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
+    joystick_clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
+    feedback_clients: Arc<Mutex<Vec<UnixStream>>>,
+    feedback_socket_path: Option<PathBuf>,
 }
 impl VirtualDevice {
     /// Create a new virtual device
@@ -38,40 +41,66 @@ impl VirtualDevice {
         SysfsGenerator::create_device_files(id, &config, base_path)?;
 
         let clients = Arc::new(Mutex::new(Vec::new()));
+        let feedback_clients = Arc::new(Mutex::new(Vec::new()));
 
         // Start accepting client connections
-        let clients_clone = Arc::clone(&clients);
+        let clients_clone = clients.clone();
+        let feedback_clients_clone = feedback_clients.clone();
         let config_clone = config.clone();
         tokio::spawn(async move {
-            Self::accept_clients(listener, clients_clone, config_clone).await;
+            Self::accept_clients(
+                listener,
+                clients_clone,
+                feedback_clients_clone,
+                config_clone,
+            )
+            .await;
+        });
+
+        // Create feedback socket
+        let feedback_socket_path = base_path
+            .join("devices")
+            .join(format!("{}.feedback", &event_node));
+        let _ = std::fs::remove_file(&feedback_socket_path);
+
+        let feedback_listener = UnixListener::bind(&feedback_socket_path)?;
+        let feedback_clients_clone = Arc::clone(&feedback_clients);
+        tokio::spawn(async move {
+            loop {
+                if let Ok((stream, _)) = feedback_listener.accept().await {
+                    tracing::debug!("Client connected to feedback socket");
+                    feedback_clients_clone.lock().await.push(stream);
+                }
+            }
         });
 
         // Create joystick interface if device has axes or buttons
-        let (joystick_node, joystick_socket_path, joystick_clients) =
-            if !config.buttons.is_empty() || !config.axes.is_empty() {
-                let js_node = format!("js{}", id);
-                let js_socket_path = base_path.join("devices").join(&js_node);
+        let (joystick_node, joystick_socket_path, joystick_clients) = if !config.buttons.is_empty()
+            || !config.axes.is_empty()
+        {
+            let js_node = format!("js{}", id);
+            let js_socket_path = base_path.join("devices").join(&js_node);
 
-                // Remove old socket if exists
-                let _ = std::fs::remove_file(&js_socket_path);
+            // Remove old socket if exists
+            let _ = std::fs::remove_file(&js_socket_path);
 
-                // Create joystick socket
-                let js_listener = UnixListener::bind(&js_socket_path)?;
+            // Create joystick socket
+            let js_listener = UnixListener::bind(&js_socket_path)?;
 
-                let js_clients = Arc::new(Mutex::new(Vec::new()));
-                let js_clients_clone = Arc::clone(&js_clients);
-                let config_clone = config.clone();
+            let js_clients = Arc::new(Mutex::new(Vec::new()));
+            let js_clients_clone = js_clients.clone();
+            let config_clone = config.clone();
 
-                tokio::spawn(async move {
-                    Self::accept_clients(js_listener, js_clients_clone, config_clone).await;
-                });
+            tokio::spawn(async move {
+                Self::accept_joystick_clients(js_listener, js_clients_clone, config_clone).await;
+            });
 
-                info!("Created joystick node: {}", js_node);
+            info!("Created joystick node: {}", js_node);
 
-                (Some(js_node), Some(js_socket_path), js_clients)
-            } else {
-                (None, None, Arc::new(Mutex::new(Vec::new())))
-            };
+            (Some(js_node), Some(js_socket_path), js_clients)
+        } else {
+            (None, None, Arc::new(Mutex::new(Vec::new())))
+        };
 
         Ok(Self {
             id,
@@ -83,34 +112,39 @@ impl VirtualDevice {
             base_path: base_path.to_path_buf(),
             clients,
             joystick_clients,
+            feedback_clients,
+            feedback_socket_path: Some(feedback_socket_path),
         })
     }
 
     /// Accept client connections to device socket
     async fn accept_clients(
         listener: UnixListener,
-        clients: Arc<Mutex<Vec<UnixStream>>>,
+        clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
+        feedback_clients: Arc<Mutex<Vec<UnixStream>>>,
         config: DeviceConfig,
     ) {
         loop {
             match listener.accept().await {
-                Ok((mut stream, _)) => {
-                    info!("Client connected to device socket");
+                Ok((stream, _)) => {
+                    debug!("Client connected to device socket");
+
+                    let (mut read_half, mut write_half) = stream.into_split();
 
                     // Send device config to the client as the first message
                     // Format: 4-byte length prefix + JSON config
                     match serde_json::to_vec(&config) {
                         Ok(config_json) => {
                             let len = config_json.len() as u32;
-                            if let Err(e) = stream.write_all(&len.to_le_bytes()).await {
+                            if let Err(e) = write_half.write_all(&len.to_le_bytes()).await {
                                 error!("Failed to send config length to client: {}", e);
                                 continue;
                             }
-                            if let Err(e) = stream.write_all(&config_json).await {
+                            if let Err(e) = write_half.write_all(&config_json).await {
                                 error!("Failed to send config to client: {}", e);
                                 continue;
                             }
-                            info!("Sent device config to client ({} bytes)", config_json.len());
+                            debug!("Sent device config to client ({} bytes)", config_json.len());
                         }
                         Err(e) => {
                             error!("Failed to serialize device config: {}", e);
@@ -118,10 +152,81 @@ impl VirtualDevice {
                         }
                     }
 
-                    clients.lock().await.push(stream);
+                    clients.lock().await.push(write_half);
+
+                    // Spawn reader for feedback events
+                    let feedback_clients = feedback_clients.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 24];
+                        while read_half.read_exact(&mut buf).await.is_ok() {
+                            let event: LinuxInputEvent =
+                                unsafe { std::ptr::read(buf.as_ptr() as *const _) };
+
+                            if event.event_type == EV_FF {
+                                debug!(
+                                    "Received feedback event: type={}, code={}, value={}",
+                                    event.event_type,
+                                    event.code,
+                                    event.value
+                                );
+                                let mut clients = feedback_clients.lock().await;
+                                debug!("Writing to {} feedback clients", clients.len());
+                                let mut disconnected = Vec::new();
+
+                                for (idx, client) in clients.iter_mut().enumerate() {
+                                    if let Err(e) = client.write_all(&buf).await {
+                                        trace!("Failed to write to feedback client {}: {}", idx, e);
+                                        disconnected.push(idx);
+                                    } else {
+                                        debug!("Wrote feedback to client {}", idx);
+                                    }
+                                }
+
+                                // Remove disconnected clients in reverse order
+                                for idx in disconnected.iter().rev() {
+                                    clients.remove(*idx);
+                                }
+                            }
+                        }
+                    });
                 }
                 Err(e) => {
                     error!("Error accepting client: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn accept_joystick_clients(
+        listener: UnixListener,
+        clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
+        config: DeviceConfig,
+    ) {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    info!("Client connected to joystick socket");
+
+                    let (_, mut write_half) = stream.into_split();
+
+                    // Send config
+                    match serde_json::to_vec(&config) {
+                        Ok(config_json) => {
+                            let len = config_json.len() as u32;
+                            if write_half.write_all(&len.to_le_bytes()).await.is_err()
+                                || write_half.write_all(&config_json).await.is_err()
+                            {
+                                continue;
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+
+                    clients.lock().await.push(write_half);
+                }
+                Err(e) => {
+                    error!("Error accepting joystick client: {}", e);
                     break;
                 }
             }
@@ -271,6 +376,11 @@ impl Drop for VirtualDevice {
         // Clean up joystick socket
         if let Some(js_socket) = &self.joystick_socket_path {
             let _ = std::fs::remove_file(js_socket);
+        }
+
+        // Clean up feedback socket
+        if let Some(feedback_socket) = &self.feedback_socket_path {
+            let _ = std::fs::remove_file(feedback_socket);
         }
 
         // Clean up sysfs files
