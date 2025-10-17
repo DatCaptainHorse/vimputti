@@ -1,5 +1,3 @@
-use crate::ORIGINAL_FUNCTIONS;
-
 pub struct PathRedirector {
     base_path: String,
 }

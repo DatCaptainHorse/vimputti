@@ -9,7 +9,6 @@ use std::os::unix::io::AsRawFd;
 pub struct LockFile {
     _file: File,
 }
-
 impl LockFile {
     /// Acquire an exclusive lock on the given path
     pub fn acquire(path: &Path) -> anyhow::Result<Self> {
@@ -33,7 +32,6 @@ impl LockFile {
         Ok(Self { _file: file })
     }
 }
-
 impl Drop for LockFile {
     fn drop(&mut self) {
         tracing::info!("Released lock file");

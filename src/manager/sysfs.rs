@@ -4,7 +4,6 @@ use std::path::Path;
 
 /// Enhanced sysfs file generator
 pub struct SysfsGenerator;
-
 impl SysfsGenerator {
     /// Create complete sysfs structure for a device
     pub fn create_device_files(

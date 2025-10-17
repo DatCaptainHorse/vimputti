@@ -21,7 +21,6 @@ pub struct VirtualController {
     event_node: String,
     batch_manager: BatchManager,
 }
-
 impl VirtualController {
     pub(crate) fn new(client: Arc<ClientInner>, device_id: DeviceId, event_node: String) -> Self {
         let batch_manager =

@@ -7,6 +7,11 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::debug;
 
+struct FlushRequest {
+    events: Vec<InputEvent>,
+    response_tx: tokio::sync::oneshot::Sender<Result<()>>,
+}
+
 /// Manages automatic batching and flushing of input events
 pub struct BatchManager {
     device_id: DeviceId,
@@ -15,12 +20,6 @@ pub struct BatchManager {
     last_event_time: Arc<Mutex<Option<Instant>>>,
     flush_tx: tokio::sync::mpsc::UnboundedSender<FlushRequest>,
 }
-
-struct FlushRequest {
-    events: Vec<InputEvent>,
-    response_tx: tokio::sync::oneshot::Sender<Result<()>>,
-}
-
 impl BatchManager {
     pub fn new(client: Arc<ClientInner>, device_id: DeviceId, timeout: Duration) -> Self {
         let pending_events = Arc::new(Mutex::new(Vec::new()));

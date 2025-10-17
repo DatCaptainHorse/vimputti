@@ -3,7 +3,6 @@
 use lazy_static::lazy_static;
 use libc::{c_char, c_int, c_uint, c_void};
 use std::ffi::{CStr, CString};
-use std::os::fd::{AsRawFd, RawFd};
 use std::os::raw::c_long;
 use std::path::PathBuf;
 use tracing::debug;

@@ -5,23 +5,22 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::debug;
 
 mod batch;
 mod device;
 
 pub use device::VirtualController;
 
-/// Client for communicating with the vimputti manager
-pub struct VimputtiClient {
-    inner: Arc<ClientInner>,
-}
-
 pub(crate) struct ClientInner {
     stream: Mutex<UnixStream>,
     socket_path: String,
 }
 
+/// Client for communicating with the vimputti manager
+pub struct VimputtiClient {
+    inner: Arc<ClientInner>,
+}
 impl VimputtiClient {
     /// Connect to a vimputti manager instance
     pub async fn connect(socket_path: impl AsRef<Path>) -> Result<Self> {
@@ -126,46 +125,7 @@ impl VimputtiClient {
 
         Ok(response.result)
     }
-
-    /// Internal method for sending input events (used by VirtualController)
-    pub(crate) async fn send_input_internal(
-        &self,
-        device_id: DeviceId,
-        events: Vec<InputEvent>,
-    ) -> Result<()> {
-        let response = self
-            .send_command(ControlCommand::SendInput { device_id, events })
-            .await?;
-
-        match response {
-            ControlResult::InputSent => Ok(()),
-            ControlResult::Error { message } => {
-                anyhow::bail!("Failed to send input: {}", message)
-            }
-            _ => anyhow::bail!("Unexpected response to SendInput"),
-        }
-    }
-
-    /// Internal method for destroying a device (used by VirtualController)
-    pub(crate) async fn destroy_device_internal(&self, device_id: DeviceId) -> Result<()> {
-        let response = self
-            .send_command(ControlCommand::DestroyDevice { device_id })
-            .await?;
-
-        match response {
-            ControlResult::DeviceDestroyed => Ok(()),
-            ControlResult::Error { message } => {
-                warn!("Failed to destroy device {}: {}", device_id, message);
-                Ok(()) // Don't fail on cleanup
-            }
-            _ => {
-                warn!("Unexpected response to DestroyDevice");
-                Ok(()) // Don't fail on cleanup
-            }
-        }
-    }
 }
-
 impl Clone for VimputtiClient {
     fn clone(&self) -> Self {
         Self {

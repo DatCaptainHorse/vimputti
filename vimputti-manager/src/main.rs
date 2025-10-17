@@ -12,9 +12,6 @@ struct Args {
     /// Instance number (used to generate socket path)
     #[arg(short, long, default_value = "0")]
     instance: u32,
-    /// Allow kernel events to be broadcasted (default: false)
-    #[arg(long, default_value_t = false)]
-    kernel_events: bool,
 }
 
 #[tokio::main]
@@ -39,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Socket path: {}", socket_path.display());
 
     // Create and run manager
-    let mut manager = Manager::new(&socket_path, args.kernel_events)?;
+    let mut manager = Manager::new(&socket_path)?;
     manager.run().await?;
 
     Ok(())

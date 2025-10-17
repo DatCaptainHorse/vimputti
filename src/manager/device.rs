@@ -168,24 +168,13 @@ impl VirtualDevice {
         let mut disconnected = Vec::new();
 
         for (idx, client) in clients.iter_mut().enumerate() {
-            // USE TIMEOUT! Don't block forever
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(10), // 10ms max
-                client.write_all(&data),
-            )
-            .await
-            {
-                Ok(Ok(())) => {
+            match client.write_all(&data).await {
+                Ok(()) => {
                     // Success
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     trace!("Failed to write to evdev client {}: {}", idx, e);
                     disconnected.push(idx);
-                }
-                Err(_) => {
-                    // Timeout - client not reading fast enough, drop it
-                    trace!("Evdev client {} timeout - not reading, dropping", idx);
-                    //disconnected.push(idx);
                 }
             }
         }
@@ -238,7 +227,6 @@ impl VirtualDevice {
                         });
                     }
                 }
-
                 _ => {} // Ignore raw events and sync for joystick
             }
         }
@@ -257,23 +245,13 @@ impl VirtualDevice {
         let mut disconnected = Vec::new();
 
         for (idx, client) in clients.iter_mut().enumerate() {
-            // USE TIMEOUT HERE TOO
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(10),
-                client.write_all(&data),
-            )
-            .await
-            {
-                Ok(Ok(())) => {
+            match client.write_all(&data).await {
+                Ok(()) => {
                     // Success
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     trace!("Failed to write to joystick client {}: {}", idx, e);
                     disconnected.push(idx);
-                }
-                Err(_) => {
-                    trace!("Joystick client {} timeout - not reading, dropping", idx);
-                    //disconnected.push(idx);
                 }
             }
         }

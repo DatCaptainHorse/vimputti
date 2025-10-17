@@ -175,16 +175,9 @@ impl UinputEmulator {
             };
 
             if let Some(mirror_device) = mirror_device {
-                // Send to mirror device with timeout
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(10),
-                    mirror_device.send_events(events),
-                )
-                .await
-                {
-                    Ok(Ok(())) => trace!("Mirrored successfully"),
-                    Ok(Err(e)) => warn!("Mirror send failed: {}", e),
-                    Err(_) => warn!("Mirror send timeout - game may not be reading"),
+                match mirror_device.send_events(events).await {
+                    Ok(()) => trace!("Mirrored successfully"),
+                    Err(e) => warn!("Mirror send failed: {}", e),
                 }
             } else {
                 trace!("Mirror device {} no longer exists", mirror_id);
@@ -290,32 +283,18 @@ impl UinputEmulator {
                 }
             };
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                stream.write_all(&response_bytes),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
+            match stream.write_all(&response_bytes).await {
+                Ok(()) => {}
+                Err(e) => {
                     error!("Write error session {}: {}", session_id, e);
-                    break;
-                }
-                Err(_) => {
-                    error!("Write timeout session {}", session_id);
                     break;
                 }
             }
 
-            match tokio::time::timeout(std::time::Duration::from_millis(100), stream.flush()).await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
+            match stream.flush().await {
+                Ok(()) => {}
+                Err(e) => {
                     error!("Flush error session {}: {}", session_id, e);
-                    break;
-                }
-                Err(_) => {
-                    error!("Flush timeout session {}", session_id);
                     break;
                 }
             }
@@ -585,13 +564,8 @@ impl UinputEmulator {
                 };
 
                 if let Some(device) = device {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
-                        device.send_events(&input_events),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {
+                    match device.send_events(&input_events).await {
+                        Ok(()) => {
                             trace!("Forwarded successfully to device {}", device_id);
                             UinputResponse {
                                 success: true,
@@ -599,20 +573,12 @@ impl UinputEmulator {
                                 error: None,
                             }
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             error!("Failed to forward to device {}: {}", device_id, e);
                             UinputResponse {
                                 success: false,
                                 device_id: Some(device_id),
                                 error: Some(format!("Forward error: {}", e)),
-                            }
-                        }
-                        Err(_) => {
-                            warn!("Timeout forwarding to device {}", device_id);
-                            UinputResponse {
-                                success: true, // Pretend success to not block Steam
-                                device_id: Some(device_id),
-                                error: None,
                             }
                         }
                     }

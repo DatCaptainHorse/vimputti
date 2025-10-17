@@ -41,7 +41,7 @@ pub struct Manager {
 }
 impl Manager {
     /// Create a new manager instance
-    pub fn new(socket_path: impl AsRef<Path>, kernel_events: bool) -> anyhow::Result<Self> {
+    pub fn new(socket_path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let socket_path = socket_path.as_ref();
         let base_path = socket_path.parent().unwrap().join("vimputti");
 
@@ -58,7 +58,7 @@ impl Manager {
         // Create udev broadcaster
         let udev_broadcaster = Arc::new(UdevBroadcaster::new(&base_path)?);
         // Create netlink broadcaster
-        let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new(kernel_events)?);
+        let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new()?);
 
         let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
             Arc::new(Mutex::new(HashMap::new()));

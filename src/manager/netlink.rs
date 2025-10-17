@@ -5,10 +5,9 @@ use tracing::info;
 
 pub struct NetlinkBroadcaster {
     socket: i32,
-    allow_kernel_events: bool,
 }
 impl NetlinkBroadcaster {
-    pub fn new(kernel_events: bool) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         const AF_NETLINK: i32 = 16;
         const NETLINK_KOBJECT_UEVENT: i32 = 15;
         const SOCK_RAW: i32 = 3;
@@ -19,10 +18,7 @@ impl NetlinkBroadcaster {
         }
 
         info!("netlink broadcaster created");
-        Ok(Self {
-            socket: sock,
-            allow_kernel_events: kernel_events,
-        })
+        Ok(Self { socket: sock })
     }
 
     /// Send a udev event via real netlink
@@ -65,7 +61,7 @@ impl NetlinkBroadcaster {
         // Send to GROUP_UDEV (2) if kernel events not allowed, otherwise to kernel
         let mut sa: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         sa.nl_family = 16; // AF_NETLINK
-        sa.nl_groups = if self.allow_kernel_events { 1 } else { 2 };
+        sa.nl_groups = 2;
         sa.nl_pid = 0;
 
         let iov = libc::iovec {
