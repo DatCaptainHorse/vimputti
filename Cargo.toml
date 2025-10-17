@@ -16,6 +16,11 @@ anyhow = "1.0"
 name = "vimputti"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
+description = "Linux input system pretender for isolated containers"
+repository = "https://github.com/DatCaptainHorse/vimputti"
+readme = "README.md"
+keywords = ["linux", "input"]
 
 [dependencies]
 tokio = { workspace = true }
