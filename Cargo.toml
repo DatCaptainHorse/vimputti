@@ -14,9 +14,9 @@ anyhow = "1.0"
 
 [package]
 name = "vimputti"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-license-file = "LICENSE"
+license = "MIT"
 description = "Linux input system pretender for isolated containers"
 repository = "https://github.com/DatCaptainHorse/vimputti"
 readme = "README.md"
