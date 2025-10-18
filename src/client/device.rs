@@ -179,7 +179,7 @@ impl VirtualController {
                                 if event.value == 0 {
                                     // Stop rumble
                                     let feedback = FeedbackEvent::RumbleStop;
-                                    tracing::info!("Sending rumble stop");
+                                    debug!("Sending rumble stop");
                                     let _ = tx.send(feedback);
                                 } else {
                                     // Parse magnitudes
@@ -197,7 +197,7 @@ impl VirtualController {
                                     duration_ms: pending_duration,
                                 };
 
-                                tracing::info!(
+                                debug!(
                                     "Sending rumble: strong={}, weak={}, duration={}ms",
                                     pending_strong,
                                     pending_weak,
