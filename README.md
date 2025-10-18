@@ -47,7 +47,6 @@ and send input events to them. Currently Rust only, feel free to create a new is
 
 #### TODOs (in no particular order)
 
-- [ ] Rumble feedback support
 - [ ] More bindings (C/C++, Go..)
 
 #### Credits for wonderful people
