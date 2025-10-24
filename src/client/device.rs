@@ -199,9 +199,7 @@ impl VirtualController {
 
                                 debug!(
                                     "Sending rumble: strong={}, weak={}, duration={}ms",
-                                    pending_strong,
-                                    pending_weak,
-                                    pending_duration
+                                    pending_strong, pending_weak, pending_duration
                                 );
                                 let _ = tx.send(feedback);
                             }

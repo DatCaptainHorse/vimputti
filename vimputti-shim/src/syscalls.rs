@@ -128,18 +128,18 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                             }
                             Err(e) => {
                                 debug!("Failed to deserialize device config: {}, using default", e);
-                                vimputti::templates::ControllerTemplates::xbox360()
+                                ControllerTemplates::xbox360()
                             }
                         },
                         Err(e) => {
                             debug!("Failed to read device config data: {}, using default", e);
-                            vimputti::templates::ControllerTemplates::xbox360()
+                            ControllerTemplates::xbox360()
                         }
                     }
                 }
                 Err(e) => {
                     debug!("Failed to read config length: {}, using default", e);
-                    vimputti::templates::ControllerTemplates::xbox360()
+                    ControllerTemplates::xbox360()
                 }
             };
 

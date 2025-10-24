@@ -130,7 +130,10 @@ impl VirtualDevice {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    debug!("Client connected to device socket: {} ({})", event_node, config.name);
+                    debug!(
+                        "Client connected to device socket: {} ({})",
+                        event_node, config.name
+                    );
 
                     let (mut read_half, mut write_half) = stream.into_split();
 
@@ -168,9 +171,7 @@ impl VirtualDevice {
                             if event.event_type == EV_FF {
                                 debug!(
                                     "Received feedback event: type={}, code={}, value={}",
-                                    event.event_type,
-                                    event.code,
-                                    event.value
+                                    event.event_type, event.code, event.value
                                 );
                                 let mut clients = feedback_clients.lock().await;
                                 debug!("Writing to {} feedback clients", clients.len());

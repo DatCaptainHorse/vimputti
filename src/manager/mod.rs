@@ -251,7 +251,10 @@ impl Manager {
                     id
                 };
 
-                debug!("Creating device {} with config: name={}, vendor_id=0x{:04x}, product_id=0x{:04x}", device_id, config.name, config.vendor_id, config.product_id);
+                debug!(
+                    "Creating device {} with config: name={}, vendor_id=0x{:04x}, product_id=0x{:04x}",
+                    device_id, config.name, config.vendor_id, config.product_id
+                );
                 match VirtualDevice::create(device_id, config.clone(), base_path).await {
                     Ok(device) => {
                         let event_node = device.event_node.clone();
@@ -313,11 +316,7 @@ impl Manager {
 
                 match device {
                     Some(device) => {
-                        let send_result = tokio::time::timeout(
-                            std::time::Duration::from_millis(50),
-                            device.send_events(&events),
-                        )
-                        .await;
+                        let send_result = device.send_events(&events).await;
 
                         // Also mirror to uinput devices if any
                         let _ = uinput_emulator
@@ -325,14 +324,10 @@ impl Manager {
                             .await;
 
                         match send_result {
-                            Ok(Ok(())) => ControlResult::InputSent,
-                            Ok(Err(e)) => ControlResult::Error {
+                            Ok(()) => ControlResult::InputSent,
+                            Err(e) => ControlResult::Error {
                                 message: format!("Failed to send input: {}", e),
                             },
-                            Err(_) => {
-                                warn!("Send to device {} timed out", device_id);
-                                ControlResult::InputSent // Pretend success
-                            }
                         }
                     }
                     None => ControlResult::Error {

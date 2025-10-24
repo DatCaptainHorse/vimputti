@@ -63,7 +63,15 @@ impl SysfsGenerator {
 
         // Add unique name identifier
         let unique_name = format!("{} ({})", config.name, event_node);
-        tracing::debug!("Sysfs for device event_path={:?}: unique_name={}, product={:x}/{:x}/{:x}/{:x}", event_path, unique_name, config.bustype as u16, config.vendor_id, config.product_id, config.version);
+        tracing::debug!(
+            "Sysfs for device event_path={:?}: unique_name={}, product={:x}/{:x}/{:x}/{:x}",
+            event_path,
+            unique_name,
+            config.bustype as u16,
+            config.vendor_id,
+            config.product_id,
+            config.version
+        );
 
         // Write input device properties
         std::fs::write(input_base.join("name"), format!("{}\n", unique_name))?;
@@ -104,7 +112,7 @@ impl SysfsGenerator {
         )?;
 
         // Write uevent
-        let uevent_content = format!(
+        let mut uevent_content = format!(
             "PRODUCT={:x}/{:x}/{:x}/{:x}\n\
              NAME=\"{}\"\n\
              PHYS=\"vimputti-{}\"\n\
@@ -123,6 +131,16 @@ impl SysfsGenerator {
             Self::calculate_key_bits(config),
             Self::calculate_abs_bits(config),
         );
+
+        let device_id = event_node
+            .trim_start_matches("event")
+            .parse::<u64>()
+            .unwrap_or(0);
+        if matches!(config.bustype, BusType::Usb) {
+            uevent_content.push_str(&"BUSNUM=253\n".to_string());
+            uevent_content.push_str(&format!("DEVNUM={}\n", device_id + 1));
+        }
+
         std::fs::write(input_base.join("uevent"), uevent_content)?;
 
         // Event node properties
@@ -165,8 +183,26 @@ impl SysfsGenerator {
         let udev_data_dir = base_path.join("udev_data");
         std::fs::create_dir_all(&udev_data_dir)?;
 
+        // Generate unique initialization timestamp (microseconds)
+        let init_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros() as u64
+            + (id * 1000);
+
         // Format: E:KEY=VALUE lines
         let mut content = String::new();
+
+        // main props..
+        let event_node = format!("event{}", id);
+        content.push_str(&format!(
+            "S:input/by-path/platform-vimputti-device{}-event-joystick\n",
+            id
+        ));
+        content.push_str(&format!(
+            "S:input/by-id/platform-vimputti-{}-event-joystick\n",
+            event_node
+        ));
+        content.push_str(&format!("I:{}\n", init_time));
         content.push_str("E:ID_INPUT=1\n");
         content.push_str("E:ID_INPUT_JOYSTICK=1\n");
         content.push_str(&format!("E:ID_VENDOR_ID={:04x}\n", config.vendor_id));
@@ -179,33 +215,64 @@ impl SysfsGenerator {
         };
         content.push_str(&format!("E:ID_BUS={}\n", bus_name));
 
-        // Vendor info
+        // Vendor/Model info
         let vendor_name = match config.vendor_id {
             0x045e => "Microsoft",
             0x054c => "Sony",
             0x057e => "Nintendo",
             _ => "Unknown",
         };
+        content.push_str(&format!("E:ID_VENDOR={}\n", vendor_name));
         content.push_str(&format!("E:ID_VENDOR_ENC={}\n", vendor_name));
-        content.push_str(&format!("E:ID_VENDOR_FROM_DATABASE={}\n", vendor_name));
-
-        // Model info
+        content.push_str(&format!("E:ID_MODEL={}\n", config.name.replace(' ', "_")));
         content.push_str(&format!(
             "E:ID_MODEL_ENC={}\n",
             config.name.replace(' ', "\\x20")
         ));
-        content.push_str(&format!("E:ID_MODEL_FROM_DATABASE={}\n", config.name));
 
-        // Path info
-        content.push_str(&format!("E:ID_PATH=platform-vimputti-event{}\n", id));
-        content.push_str(&format!("E:ID_PATH_TAG=platform-vimputti-event{}\n", id));
-        content.push_str(&format!("E:ID_SERIAL=vimputti_event{}\n", id));
+        // usb props..
+        if matches!(config.bustype, BusType::Usb) {
+            content.push_str(&"E:BUSNUM=253\n".to_string());
+            content.push_str(&format!("E:DEVNUM={:03}\n", id + 1));
+            content.push_str(&format!("E:ID_USB_VENDOR={}\n", vendor_name));
+            content.push_str(&format!("E:ID_USB_VENDOR_ENC={}\n", vendor_name));
+            content.push_str(&format!("E:ID_USB_VENDOR_ID={:04x}\n", config.vendor_id));
+            content.push_str(&format!(
+                "E:ID_USB_MODEL={}\n",
+                config.name.replace(' ', "_")
+            ));
+            content.push_str(&format!(
+                "E:ID_USB_MODEL_ENC={}\n",
+                config.name.replace(' ', "\\x20")
+            ));
+            content.push_str(&format!("E:ID_USB_MODEL_ID={:04x}\n", config.product_id));
+            content.push_str(&format!("E:ID_USB_REVISION={:04x}\n", config.version));
+            content.push_str(&format!("E:ID_SERIAL={}_{}\n", vendor_name, event_node));
+            content.push_str(&format!("E:ID_USB_SERIAL={}_{}\n", vendor_name, event_node));
+            content.push_str("E:ID_TYPE=hid\n");
+            content.push_str("E:ID_USB_TYPE=hid\n");
+            content.push_str("E:ID_USB_INTERFACES=:030000:\n");
+            content.push_str("E:ID_USB_INTERFACE_NUM=00\n");
+            content.push_str("E:ID_USB_DRIVER=usbhid\n");
+        }
 
-        tracing::debug!("Udev data for device {}: ID_SERIAL={}, ID_MODEL_ID=0x{:04x}", id, format!("vimputti_event{}", id), config.product_id);
+        // path props.. (unique per device)
+        content.push_str(&format!("E:ID_PATH=platform-vimputti-device{}\n", id));
+        content.push_str(&format!("E:ID_PATH_TAG=platform-vimputti-device{}\n", id));
+        content.push_str(&format!(
+            "E:ID_FOR_SEAT=input-platform-vimputti-device{}\n",
+            id
+        ));
 
-        // Tags
-        content.push_str("E:TAGS=:uaccess:\n");
-        content.push_str("G:uaccess\n"); // ACL tag
+        // tags..
+        content.push_str("E:TAGS=:seat:uaccess:\n");
+        content.push_str("G:seat\n");
+        content.push_str("G:uaccess\n");
+        content.push_str("Q:seat\n");
+        content.push_str("Q:uaccess\n");
+
+        // version..
+        content.push_str("V:1\n");
 
         std::fs::write(udev_data_dir.join(&data_file), content)?;
 

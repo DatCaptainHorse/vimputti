@@ -796,7 +796,10 @@ pub unsafe extern "C" fn scandir(
                             let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(256);
 
                             if let Ok(name_str) = std::str::from_utf8(unsafe {
-                                std::slice::from_raw_parts(name_bytes.as_ptr() as *const u8, name_len)
+                                std::slice::from_raw_parts(
+                                    name_bytes.as_ptr() as *const u8,
+                                    name_len,
+                                )
                             }) {
                                 if !name_str.ends_with(".feedback") {
                                     kept.push(entry);

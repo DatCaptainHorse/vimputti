@@ -94,9 +94,13 @@ impl NetlinkBroadcaster {
         let event_node = format!("event{}", device_id);
         let input_node = format!("input{}", device_id);
 
-        let properties = vec![
+        let mut properties = vec![
             ("ID_INPUT".to_string(), "1".to_string()),
             ("ID_INPUT_JOYSTICK".to_string(), "1".to_string()),
+            (
+                "ID_MODEL".to_string(),
+                format!("{}_{}", config.name.replace(' ', "_"), device_id),
+            ),
             (
                 "ID_VENDOR_ID".to_string(),
                 format!("{:04x}", config.vendor_id),
@@ -123,6 +127,11 @@ impl NetlinkBroadcaster {
             ),
         ];
 
+        if matches!(config.bustype, BusType::Usb) {
+            properties.push(("BUSNUM".to_string(), "253".to_string()));
+            properties.push(("DEVNUM".to_string(), format!("{:03}", device_id + 1)));
+        }
+
         let event = UdevEvent {
             action: UdevAction::Add,
             device_info: UdevDeviceInfo {
@@ -145,7 +154,7 @@ impl NetlinkBroadcaster {
         let event_node = format!("event{}", device_id);
         let input_node = format!("input{}", device_id);
 
-        let event = UdevEvent {
+        let mut event = UdevEvent {
             action: UdevAction::Remove,
             device_info: UdevDeviceInfo {
                 subsystem: "input".to_string(),
@@ -153,9 +162,29 @@ impl NetlinkBroadcaster {
                 devname: format!("/dev/input/{}", event_node),
                 devpath: format!("/devices/virtual/input/{}/{}", input_node, event_node),
                 syspath: format!("/sys/devices/virtual/input/{}/{}", input_node, event_node),
-                properties: vec![("NAME".to_string(), format!("\"{}\"", config.name))],
+                properties: vec![
+                    ("NAME".to_string(), format!("\"{}\"", config.name)),
+                    (
+                        "ID_MODEL".to_string(),
+                        format!("{}_{}", config.name.replace(' ', "_"), device_id),
+                    ),
+                    ("ID_SERIAL".to_string(), format!("vimputti_{}", event_node)),
+                    ("ID_SERIAL_SHORT".to_string(), event_node.clone()),
+                    ("UNIQ".to_string(), event_node.clone()),
+                ],
             },
         };
+
+        if matches!(config.bustype, BusType::Usb) {
+            event
+                .device_info
+                .properties
+                .push(("BUSNUM".to_string(), "253".to_string()));
+            event
+                .device_info
+                .properties
+                .push(("DEVNUM".to_string(), format!("{:03}", device_id + 1)));
+        }
 
         self.send_event(&event)?;
         info!("Sent netlink remove event for {}", event_node);
