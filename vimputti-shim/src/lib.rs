@@ -722,13 +722,8 @@ pub unsafe extern "C" fn opendir(name: *const c_char) -> *mut libc::DIR {
 
     // Redirect /dev/input to our devices directory
     if path_str == "/dev/input" {
-        let redirected = PATH_REDIRECTOR
-            .redirect("/dev/input/event0")
-            .map(|p| {
-                // Extract base path (remove the event0 part)
-                PathBuf::from(p).parent().unwrap().to_path_buf()
-            })
-            .unwrap_or_else(|| PathBuf::from("/dev/input"));
+        let base_path = syscalls::get_base_path();
+        let redirected = PathBuf::from(format!("{}/devices", base_path));
 
         debug!("opendir: /dev/input -> {}", redirected.display());
         let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
@@ -783,10 +778,8 @@ pub unsafe extern "C" fn scandir(
 
     // Redirect /dev/input
     if path_str == "/dev/input" {
-        let redirected = PATH_REDIRECTOR
-            .redirect("/dev/input/event0")
-            .map(|p| PathBuf::from(p).parent().unwrap().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("/dev/input"));
+        let base_path = syscalls::get_base_path();
+        let redirected = PathBuf::from(format!("{}/devices", base_path));
 
         debug!("scandir: /dev/input -> {}", redirected.display());
         let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
