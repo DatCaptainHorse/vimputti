@@ -63,6 +63,7 @@ impl SysfsGenerator {
 
         // Add unique name identifier
         let unique_name = format!("{} ({})", config.name, event_node);
+        tracing::debug!("Sysfs for device event_path={:?}: unique_name={}, product={:x}/{:x}/{:x}/{:x}", event_path, unique_name, config.bustype as u16, config.vendor_id, config.product_id, config.version);
 
         // Write input device properties
         std::fs::write(input_base.join("name"), format!("{}\n", unique_name))?;
@@ -199,6 +200,8 @@ impl SysfsGenerator {
         content.push_str(&format!("E:ID_PATH=platform-vimputti-event{}\n", id));
         content.push_str(&format!("E:ID_PATH_TAG=platform-vimputti-event{}\n", id));
         content.push_str(&format!("E:ID_SERIAL=vimputti_event{}\n", id));
+
+        tracing::debug!("Udev data for device {}: ID_SERIAL={}, ID_MODEL_ID=0x{:04x}", id, format!("vimputti_event{}", id), config.product_id);
 
         // Tags
         content.push_str("E:TAGS=:uaccess:\n");

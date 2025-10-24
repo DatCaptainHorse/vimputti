@@ -251,6 +251,7 @@ impl Manager {
                     id
                 };
 
+                debug!("Creating device {} with config: name={}, vendor_id=0x{:04x}, product_id=0x{:04x}", device_id, config.name, config.vendor_id, config.product_id);
                 match VirtualDevice::create(device_id, config.clone(), base_path).await {
                     Ok(device) => {
                         let event_node = device.event_node.clone();

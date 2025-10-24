@@ -776,25 +776,54 @@ pub unsafe extern "C" fn scandir(
         }
     };
 
-    // Redirect /dev/input
-    if path_str == "/dev/input" {
-        let base_path = syscalls::get_base_path();
-        let redirected = PathBuf::from(format!("{}/devices", base_path));
-
-        debug!("scandir: /dev/input -> {}", redirected.display());
-        let new_path = CString::new(redirected.to_string_lossy().as_ref()).unwrap();
-        if let Some(orig_scandir) = ORIGINAL_FUNCTIONS.scandir {
-            return unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
-        }
-        return -1;
-    }
-
     // Check for other redirections
     if let Some(redirected) = PATH_REDIRECTOR.redirect(path_str) {
         debug!("scandir: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_scandir) = ORIGINAL_FUNCTIONS.scandir {
-            return unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
+            let result = unsafe { orig_scandir(new_path.as_ptr(), namelist, filter, compar) };
+            // Filter out .feedback entries from the result
+            // Applications get blocked on trying to open them, due to being our special sauce devices
+            if result > 0 && !namelist.is_null() {
+                let list = unsafe { *namelist };
+                if !list.is_null() {
+                    let mut kept = Vec::new();
+
+                    for i in 0..result as usize {
+                        let entry = unsafe { *list.add(i) };
+                        if !entry.is_null() {
+                            let name_bytes = unsafe { &(*entry).d_name };
+                            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(256);
+
+                            if let Ok(name_str) = std::str::from_utf8(unsafe {
+                                std::slice::from_raw_parts(name_bytes.as_ptr() as *const u8, name_len)
+                            }) {
+                                if !name_str.ends_with(".feedback") {
+                                    kept.push(entry);
+                                } else {
+                                    // Free the filtered entry
+                                    unsafe { libc::free(entry as *mut c_void) };
+                                }
+                            } else {
+                                kept.push(entry);
+                            }
+                        }
+                    }
+
+                    // Rebuild the array
+                    for (i, &entry) in kept.iter().enumerate() {
+                        unsafe { *list.add(i) = entry };
+                    }
+                    // Null-terminate (not always needed but safe)
+                    if kept.len() < result as usize {
+                        unsafe { *list.add(kept.len()) = std::ptr::null_mut() };
+                    }
+
+                    return kept.len() as c_int;
+                }
+            }
+
+            return result;
         }
         return -1;
     }
