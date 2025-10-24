@@ -47,12 +47,14 @@ impl VirtualDevice {
         let clients_clone = clients.clone();
         let feedback_clients_clone = feedback_clients.clone();
         let config_clone = config.clone();
+        let event_node_clone = event_node.clone();
         tokio::spawn(async move {
             Self::accept_clients(
                 listener,
                 clients_clone,
                 feedback_clients_clone,
                 config_clone,
+                event_node_clone,
             )
             .await;
         });
@@ -123,11 +125,12 @@ impl VirtualDevice {
         clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
         feedback_clients: Arc<Mutex<Vec<UnixStream>>>,
         config: DeviceConfig,
+        event_node: String,
     ) {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    debug!("Client connected to device socket");
+                    debug!("Client connected to device socket: {} ({})", event_node, config.name);
 
                     let (mut read_half, mut write_half) = stream.into_split();
 

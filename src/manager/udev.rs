@@ -245,6 +245,8 @@ impl UdevBroadcaster {
         let event_node = format!("event{}", device_id);
         let input_node = format!("input{}", device_id);
 
+        let unique_name = format!("{} ({})", config.name, event_node);
+
         let properties = vec![
             ("ID_INPUT".to_string(), "1".to_string()),
             ("ID_INPUT_JOYSTICK".to_string(), "1".to_string()),
@@ -264,7 +266,7 @@ impl UdevBroadcaster {
                     BusType::Virtual => "virtual".to_string(),
                 },
             ),
-            ("NAME".to_string(), format!("\"{}\"", config.name)),
+            ("NAME".to_string(), format!("\"{}\"", unique_name)),
             (
                 "PRODUCT".to_string(),
                 format!(
@@ -272,6 +274,9 @@ impl UdevBroadcaster {
                     config.bustype as u16, config.vendor_id, config.product_id, config.version
                 ),
             ),
+            ("ID_SERIAL".to_string(), format!("vimputti_{}", event_node)),
+            ("ID_SERIAL_SHORT".to_string(), event_node.clone()),
+            ("UNIQ".to_string(), event_node.clone()),
         ];
 
         let event = UdevEvent {
@@ -300,6 +305,8 @@ impl UdevBroadcaster {
         let event_node = format!("event{}", device_id);
         let input_node = format!("input{}", device_id);
 
+        let unique_name = format!("{} ({})", config.name, event_node);
+
         let event = UdevEvent {
             action: UdevAction::Remove,
             device_info: UdevDeviceInfo {
@@ -308,7 +315,12 @@ impl UdevBroadcaster {
                 devname: format!("/dev/input/{}", event_node),
                 devpath: format!("/devices/virtual/input/{}/{}", input_node, event_node),
                 syspath: format!("/sys/devices/virtual/input/{}/{}", input_node, event_node),
-                properties: vec![("NAME".to_string(), format!("\"{}\"", config.name))],
+                properties: vec![
+                    ("NAME".to_string(), format!("\"{}\"", unique_name)),
+                    ("ID_SERIAL".to_string(), format!("vimputti_{}", event_node)),
+                    ("ID_SERIAL_SHORT".to_string(), event_node.clone()),
+                    ("UNIQ".to_string(), event_node.clone()),
+                ],
             },
         };
 

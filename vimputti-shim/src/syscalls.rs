@@ -11,6 +11,8 @@ use vimputti::*;
 lazy_static::lazy_static! {
     // Track which FDs are our virtual device sockets
     static ref VIRTUAL_DEVICE_FDS: Mutex<HashMap<RawFd, DeviceInfo>> = Mutex::new(HashMap::new());
+    // Global counter for virtual devices
+    static ref CONNECTION_COUNTER: Mutex<u64> = Mutex::new(0);
     // Track which FDs are uinput emulator connections
     static ref UINPUT_FDS: Mutex<HashMap<RawFd, Arc<Mutex<UinputConnection>>>> = Mutex::new(HashMap::new());
     // Track which FDs are udev connections
@@ -47,6 +49,7 @@ struct DeviceInfo {
     event_node: String,
     is_joystick: bool,
     config: DeviceConfig,
+    connection_id: u64,
 }
 impl DeviceInfo {
     fn num_axes(&self) -> u8 {
@@ -140,6 +143,12 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                 }
             };
 
+            let connection_id = {
+                let mut counter = CONNECTION_COUNTER.lock();
+                *counter += 1;
+                *counter
+            };
+
             let fd = stream.into_raw_fd();
 
             // Register this FD as a virtual device
@@ -149,13 +158,15 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                     event_node: event_node.clone(),
                     is_joystick,
                     config: config.clone(),
+                    connection_id,
                 },
             );
 
             debug!(
-                "Opened virtual device: fd={}, node={}, is_joystick={}, buttons={}, axes={}",
+                "Opened virtual device: fd={}, node={}, conn_id={}, is_joystick={}, buttons={}, axes={}",
                 fd,
                 event_node,
+                connection_id,
                 is_joystick,
                 config.buttons.len(),
                 config.axes.len()
@@ -201,7 +212,6 @@ pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaLi
         }
         return unsafe { handle_evdev_ioctl(fd, request, args, &info) };
     }
-
     -1
 }
 

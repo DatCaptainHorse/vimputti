@@ -61,13 +61,16 @@ impl SysfsGenerator {
         std::fs::create_dir_all(input_base.join("id"))?;
         std::fs::create_dir_all(input_base.join("capabilities"))?;
 
+        // Add unique name identifier
+        let unique_name = format!("{} ({})", config.name, event_node);
+
         // Write input device properties
-        std::fs::write(input_base.join("name"), format!("{}\n", config.name))?;
+        std::fs::write(input_base.join("name"), format!("{}\n", unique_name))?;
         std::fs::write(
             input_base.join("phys"),
             format!("vimputti-{}\n", event_node),
         )?;
-        std::fs::write(input_base.join("uniq"), "\n")?;
+        std::fs::write(input_base.join("uniq"), format!("{}\n", event_node))?;
 
         // Write IDs
         std::fs::write(
@@ -104,7 +107,7 @@ impl SysfsGenerator {
             "PRODUCT={:x}/{:x}/{:x}/{:x}\n\
              NAME=\"{}\"\n\
              PHYS=\"vimputti-{}\"\n\
-             UNIQ=\"\"\n\
+             UNIQ=\"{}\"\n\
              EV={}\n\
              KEY={}\n\
              ABS={}\n",
@@ -112,7 +115,8 @@ impl SysfsGenerator {
             config.vendor_id,
             config.product_id,
             config.version,
-            config.name,
+            unique_name,
+            event_node,
             event_node,
             Self::calculate_ev_bits(config),
             Self::calculate_key_bits(config),

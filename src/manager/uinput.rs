@@ -412,23 +412,29 @@ impl UinputEmulator {
                     state.session_id
                 );
 
-                // Find the FIRST device (the one external app is controlling)
+                // Get the next unmirrored device
                 let source_device_id = {
                     let devices_lock = devices.lock().await;
-                    devices_lock.keys().min().copied()
+                    let map = mirror_map.lock().await;
+
+                    // Find first device that doesn't have a mirror mapping yet
+                    devices_lock
+                        .keys()
+                        .find(|id| !map.contains_key(id))
+                        .copied()
                 };
 
                 if source_device_id.is_none() {
-                    warn!("No source device to mirror!");
+                    warn!("All source devices already have mirrors!");
                     return UinputResponse {
                         success: false,
                         device_id: None,
-                        error: Some("No source device".to_string()),
+                        error: Some("All devices already mirrored".to_string()),
                     };
                 }
                 let source_device_id = source_device_id.unwrap();
 
-                // Create NEW device for Steam's output
+                // Create new device for Steam's output
                 let mirror_device_id = {
                     let mut next_id = next_device_id.lock().await;
                     let id = *next_id;
