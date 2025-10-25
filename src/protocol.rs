@@ -282,6 +282,12 @@ pub struct DeviceInfo {
     pub product_id: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceHandshake {
+    pub device_id: DeviceId,
+    pub config: DeviceConfig,
+}
+
 /// Linux input event structure (for sending to device sockets)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]

@@ -7,12 +7,11 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use tracing::{debug, trace};
 use vimputti::*;
+use vimputti::protocol::DeviceHandshake;
 
 lazy_static::lazy_static! {
     // Track which FDs are our virtual device sockets
     static ref VIRTUAL_DEVICE_FDS: Mutex<HashMap<RawFd, DeviceInfo>> = Mutex::new(HashMap::new());
-    // Global counter for virtual devices
-    static ref CONNECTION_COUNTER: Mutex<u64> = Mutex::new(0);
     // Track which FDs are uinput emulator connections
     static ref UINPUT_FDS: Mutex<HashMap<RawFd, Arc<Mutex<UinputConnection>>>> = Mutex::new(HashMap::new());
     // Track which FDs are udev connections
@@ -45,11 +44,11 @@ struct UinputConnection {
 }
 
 #[derive(Clone)]
-struct DeviceInfo {
-    event_node: String,
-    is_joystick: bool,
-    config: DeviceConfig,
-    connection_id: u64,
+pub(crate) struct DeviceInfo {
+    pub(crate) device_id: DeviceId,
+    pub(crate) event_node: String,
+    pub(crate) is_joystick: bool,
+    pub(crate) config: DeviceConfig,
 }
 impl DeviceInfo {
     fn num_axes(&self) -> u8 {
@@ -71,6 +70,10 @@ pub(crate) fn get_all_device_configs() -> Vec<(String, DeviceConfig)> {
         .values()
         .map(|info| (info.event_node.clone(), info.config.clone()))
         .collect()
+}
+
+pub fn get_virtual_device_info(fd: RawFd) -> Option<DeviceInfo> {
+    VIRTUAL_DEVICE_FDS.lock().get(&fd).cloned()
 }
 
 pub(crate) fn get_base_path() -> String {
@@ -111,66 +114,61 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
             // Check if this is a joystick device
             let is_joystick = event_node.starts_with("js");
 
-            // Receive device config from daemon
-            // Format: 4-byte length prefix + JSON config
+            // Receive device handshake from daemon
+            // Format: 4-byte length prefix + JSON handshake
             let mut len_buf = [0u8; 4];
-            let config = match stream.read_exact(&mut len_buf) {
+            let handshake = match stream.read_exact(&mut len_buf) {
                 Ok(_) => {
-                    let config_len = u32::from_le_bytes(len_buf) as usize;
-                    debug!("Receiving device config ({} bytes)", config_len);
+                    let handshake_len = u32::from_le_bytes(len_buf) as usize;
+                    debug!("Receiving device handshake ({} bytes)", handshake_len);
 
-                    let mut config_buf = vec![0u8; config_len];
-                    match stream.read_exact(&mut config_buf) {
-                        Ok(_) => match serde_json::from_slice::<DeviceConfig>(&config_buf) {
-                            Ok(config) => {
-                                debug!("Successfully received device config: {}", config.name);
-                                config
+                    let mut handshake_buf = vec![0u8; handshake_len];
+                    match stream.read_exact(&mut handshake_buf) {
+                        Ok(_) => match serde_json::from_slice::<DeviceHandshake>(&handshake_buf) {
+                            Ok(handshake) => {
+                                debug!("Successfully received device handshake: {}", handshake.config.name);
+                                Some(handshake)
                             }
                             Err(e) => {
-                                debug!("Failed to deserialize device config: {}, using default", e);
-                                ControllerTemplates::xbox360()
+                                debug!("Failed to deserialize device handshake: {}", e);
+                                None
                             }
                         },
                         Err(e) => {
-                            debug!("Failed to read device config data: {}, using default", e);
-                            ControllerTemplates::xbox360()
+                            debug!("Failed to read device handshake data: {}", e);
+                            None
                         }
                     }
                 }
                 Err(e) => {
-                    debug!("Failed to read config length: {}, using default", e);
-                    ControllerTemplates::xbox360()
+                    debug!("Failed to read handshake length: {}", e);
+                    None
                 }
-            };
-
-            let connection_id = {
-                let mut counter = CONNECTION_COUNTER.lock();
-                *counter += 1;
-                *counter
             };
 
             let fd = stream.into_raw_fd();
 
-            // Register this FD as a virtual device
-            VIRTUAL_DEVICE_FDS.lock().insert(
-                fd,
-                DeviceInfo {
-                    event_node: event_node.clone(),
-                    is_joystick,
-                    config: config.clone(),
-                    connection_id,
-                },
-            );
+            if let Some(handshake) = handshake {
+                // Register this FD as a virtual device
+                VIRTUAL_DEVICE_FDS.lock().insert(
+                    fd,
+                    DeviceInfo {
+                        device_id: handshake.device_id,
+                        event_node: event_node.clone(),
+                        is_joystick,
+                        config: handshake.config.clone(),
+                    },
+                );
 
-            debug!(
-                "Opened virtual device: fd={}, node={}, conn_id={}, is_joystick={}, buttons={}, axes={}",
-                fd,
-                event_node,
-                connection_id,
-                is_joystick,
-                config.buttons.len(),
-                config.axes.len()
-            );
+                debug!(
+                    "Opened virtual device: fd={}, node={}, is_joystick={}, buttons={}, axes={}",
+                    fd,
+                    event_node,
+                    is_joystick,
+                    handshake.config.buttons.len(),
+                    handshake.config.axes.len()
+                );
+            }
             fd
         }
         Err(e) => {
@@ -332,7 +330,7 @@ unsafe fn handle_joystick_ioctl(
 
 /// Handle evdev interface ioctl calls
 unsafe fn handle_evdev_ioctl(
-    _fd: RawFd,
+    fd: RawFd,
     request: c_uint,
     args: &mut std::ffi::VaListImpl,
     device_info: &DeviceInfo,
@@ -371,11 +369,18 @@ unsafe fn handle_evdev_ioctl(
     }
 
     let request_nr = extract_request_nr(request);
+    let request_type = extract_request_type(request);
+
+    debug!(
+        "[evdev] ioctl called: fd={}, full=0x{:08x}, type=0x{:02x}, nr=0x{:02x}, node={}",
+        fd, request, request_type, request_nr, device_info.event_node
+    );
 
     match request {
         EVIOCGVERSION => {
             let ptr: *mut c_int = unsafe { args.arg() };
             if !ptr.is_null() {
+                debug!("[evdev] EVIOCGVERSION return: 0x010001");
                 unsafe {
                     *ptr = 0x010001;
                 }
@@ -393,6 +398,13 @@ unsafe fn handle_evdev_ioctl(
 
             let ptr: *mut InputId = unsafe { args.arg() };
             if !ptr.is_null() {
+                debug!(
+                    "[evdev] EVIOCGID return: bustype={:?}, vendor_id={}, product_id={}, version={}",
+                    device_info.config.bustype,
+                    device_info.config.vendor_id,
+                    device_info.config.product_id,
+                    device_info.config.version
+                );
                 unsafe {
                     *ptr = InputId {
                         bustype: device_info.config.bustype as u16,
@@ -470,7 +482,7 @@ unsafe fn handle_evdev_ioctl(
 
                     FF_EFFECTS
                         .lock()
-                        .entry(_fd)
+                        .entry(fd)
                         .or_insert_with(HashMap::new)
                         .insert(effect_id, effect_info.clone());
 
@@ -493,11 +505,12 @@ unsafe fn handle_evdev_ioctl(
             let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
-                let name_bytes = device_info.device_name().as_bytes();
-                let copy_len = std::cmp::min(name_bytes.len(), len - 1);
+                let name_str = device_info.device_name();
+                debug!("[evdev] EVIOCGNAME return: name={}", name_str);
+                let name = name_str.as_bytes();
+                let copy_len = std::cmp::min(name.len(), len);
                 unsafe {
-                    std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr, copy_len);
-                    *ptr.add(copy_len) = 0;
+                    std::ptr::copy_nonoverlapping(name.as_ptr(), ptr, copy_len);
                 }
                 copy_len as c_int
             } else {
@@ -510,7 +523,9 @@ unsafe fn handle_evdev_ioctl(
             let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
-                let phys = b"vimputti-virtual\0";
+                let phys_str = format!("usb-vimputti.0/input{}\0", device_info.device_id);
+                debug!("[evdev] EVIOCGPHYS return: phys={}", phys_str);
+                let phys = phys_str.as_bytes();
                 let copy_len = std::cmp::min(phys.len(), len);
                 unsafe {
                     std::ptr::copy_nonoverlapping(phys.as_ptr(), ptr, copy_len);
@@ -526,10 +541,15 @@ unsafe fn handle_evdev_ioctl(
             let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
+                // Use connection_id to make each device unique
+                let uniq_str = format!("{}\0", device_info.device_id);
+                debug!("[evdev] EVIOCGUNIQ return: uniq={}", uniq_str);
+                let uniq = uniq_str.as_bytes();
+                let copy_len = std::cmp::min(uniq.len(), len);
                 unsafe {
-                    *ptr = 0;
+                    std::ptr::copy_nonoverlapping(uniq.as_ptr(), ptr, copy_len);
                 }
-                1
+                copy_len as c_int
             } else {
                 -1
             }
@@ -540,6 +560,7 @@ unsafe fn handle_evdev_ioctl(
             let len = extract_request_size(request);
 
             if !ptr.is_null() && len > 0 {
+                debug!("[evdev] EVIOCGPROP return: 0",);
                 unsafe {
                     std::ptr::write_bytes(ptr, 0, len);
                 }
@@ -562,6 +583,8 @@ unsafe fn handle_evdev_ioctl(
                 unsafe {
                     std::ptr::write_bytes(ptr, 0, len);
                 }
+
+                debug!("[evdev] EVIOCGBIT return event bits: type={}", ev_type);
 
                 // Set bits based on device config
                 match ev_type as u16 {
@@ -654,9 +677,47 @@ unsafe fn handle_evdev_ioctl(
                 -1
             }
         }
+        // EVIOCGKEY - get current key state (bitmap of pressed keys)
+        _ if extract_request_type(request) == EVDEV_IOC_TYPE && request_nr == 0x18 => {
+            let ptr: *mut u8 = unsafe { args.arg() };
+            let len = extract_request_size(request);
+
+            if !ptr.is_null() && len > 0 {
+                // All keys are released (zeros)
+                unsafe {
+                    std::ptr::write_bytes(ptr, 0, len);
+                }
+                trace!(
+                    "EVIOCGKEY: returned {} bytes of zeros (no keys pressed)",
+                    len
+                );
+                0
+            } else {
+                -1
+            }
+        }
         _ => {
-            debug!("ioctl: unknown request 0x{:08x} on virtual device", request);
-            -1
+            let req_type = extract_request_type(request);
+            let req_nr = extract_request_nr(request);
+            let req_size = extract_request_size(request);
+
+            debug!(
+                "ioctl: unknown evdev request type=0x{:02x} nr=0x{:02x} size={} full=0x{:08x}",
+                req_type, req_nr, req_size, request
+            );
+
+            // For read ioctls, zero out the buffer
+            if (request & 0xC0000000) == 0x80000000 {
+                let ptr: *mut u8 = unsafe { args.arg() };
+                let size = extract_request_size(request);
+                if !ptr.is_null() && size > 0 {
+                    unsafe {
+                        std::ptr::write_bytes(ptr, 0, size);
+                    }
+                }
+            }
+
+            0
         }
     }
 }
@@ -796,7 +857,7 @@ pub unsafe fn handle_virtual_device_write(
 
 /// Clean up when a virtual device FD is closed
 pub fn close_virtual_device(fd: RawFd) {
-    VIRTUAL_DEVICE_FDS.lock().remove(&fd);
+    //VIRTUAL_DEVICE_FDS.lock().remove(&fd);
     UINPUT_FDS.lock().remove(&fd);
     UDEV_MONITOR_FDS.lock().remove(&fd);
     UNIX_SOCKET_FDS.lock().remove(&fd);

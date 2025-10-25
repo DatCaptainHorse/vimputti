@@ -74,6 +74,10 @@ struct OriginalFunctions {
     socket: Option<unsafe extern "C" fn(c_int, c_int, c_int) -> c_int>,
     connect: Option<unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int>,
     bind: Option<unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int>,
+    fstat: Option<unsafe extern "C" fn(c_int, *mut libc::stat) -> c_int>,
+    fstat64: Option<unsafe extern "C" fn(c_int, *mut libc::stat64) -> c_int>,
+    fxstat: Option<unsafe extern "C" fn(c_int, c_int, *mut libc::stat) -> c_int>,
+    fxstat64: Option<unsafe extern "C" fn(c_int, c_int, *mut libc::stat64) -> c_int>,
 }
 impl OriginalFunctions {
     fn new() -> Self {
@@ -114,6 +118,10 @@ impl OriginalFunctions {
                 socket: Self::get_original("socket"),
                 connect: Self::get_original("connect"),
                 bind: Self::get_original("bind"),
+                fstat: Self::get_original("fstat"),
+                fstat64: Self::get_original("fstat64"),
+                fxstat: Self::get_original("__fxstat"),
+                fxstat64: Self::get_original("__fxstat64"),
             }
         }
     }
@@ -408,7 +416,37 @@ pub unsafe extern "C" fn stat(pathname: *const c_char, statbuf: *mut libc::stat)
         debug!("stat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_stat) = ORIGINAL_FUNCTIONS.stat {
-            return unsafe { orig_stat(new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_stat(new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    tracing::warn!("STAT WITH event_num: {}", event_num);
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
         return -1;
     }
@@ -443,7 +481,36 @@ pub unsafe extern "C" fn lstat(pathname: *const c_char, statbuf: *mut libc::stat
         debug!("lstat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_lstat) = ORIGINAL_FUNCTIONS.lstat {
-            return unsafe { orig_lstat(new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_lstat(new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
         return -1;
     }
@@ -861,8 +928,38 @@ pub unsafe extern "C" fn stat64(pathname: *const c_char, statbuf: *mut libc::sta
         debug!("stat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_stat64) = ORIGINAL_FUNCTIONS.stat64 {
-            return unsafe { orig_stat64(new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_stat64(new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
+        return -1;
     }
 
     if let Some(orig_stat64) = ORIGINAL_FUNCTIONS.stat64 {
@@ -895,8 +992,38 @@ pub unsafe extern "C" fn lstat64(pathname: *const c_char, statbuf: *mut libc::st
         debug!("lstat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_lstat64) = ORIGINAL_FUNCTIONS.lstat64 {
-            return unsafe { orig_lstat64(new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_lstat64(new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
+        return -1;
     }
 
     if let Some(orig_lstat64) = ORIGINAL_FUNCTIONS.lstat64 {
@@ -933,8 +1060,38 @@ pub unsafe extern "C" fn __xstat(
         debug!("__xstat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_xstat) = ORIGINAL_FUNCTIONS.xstat {
-            return unsafe { orig_xstat(ver, new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_xstat(ver, new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
+        return -1;
     }
 
     if let Some(orig_xstat) = ORIGINAL_FUNCTIONS.xstat {
@@ -971,8 +1128,38 @@ pub unsafe extern "C" fn __xstat64(
         debug!("__xstat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_xstat64) = ORIGINAL_FUNCTIONS.xstat64 {
-            return unsafe { orig_xstat64(ver, new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_xstat64(ver, new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
+        return -1;
     }
 
     if let Some(orig_xstat64) = ORIGINAL_FUNCTIONS.xstat64 {
@@ -1009,8 +1196,38 @@ pub unsafe extern "C" fn __lxstat(
         debug!("__lxstat: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_lxstat) = ORIGINAL_FUNCTIONS.lxstat {
-            return unsafe { orig_lxstat(ver, new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_lxstat(ver, new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
+        return -1;
     }
 
     if let Some(orig_lxstat) = ORIGINAL_FUNCTIONS.lxstat {
@@ -1047,8 +1264,38 @@ pub unsafe extern "C" fn __lxstat64(
         debug!("__lxstat64: {} -> {}", path_str, redirected);
         let new_path = CString::new(redirected).unwrap();
         if let Some(orig_lxstat64) = ORIGINAL_FUNCTIONS.lxstat64 {
-            return unsafe { orig_lxstat64(ver, new_path.as_ptr(), statbuf) };
+            let result = unsafe { orig_lxstat64(ver, new_path.as_ptr(), statbuf) };
+
+            // Fake the DEVICE NUMBER for input devices - SDL you sonovabitch
+            if path_str.starts_with("/dev/input/event") {
+                if result == 0 && !statbuf.is_null() {
+                    let event_num: u64 = path_str
+                        .trim_start_matches("/dev/input/event")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if path_str.starts_with("/dev/input/js") {
+                if result == 0 && !statbuf.is_null() {
+                    let js_num: u64 = path_str
+                        .trim_start_matches("/dev/input/js")
+                        .parse()
+                        .unwrap_or(0);
+
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num as u32);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+
+            return result;
         }
+        return -1;
     }
 
     if let Some(orig_lxstat64) = ORIGINAL_FUNCTIONS.lxstat64 {
@@ -1306,4 +1553,192 @@ pub unsafe extern "C" fn bind(
         return unsafe { orig_bind(sockfd, addr, addrlen) };
     }
     -1
+}
+
+/// Intercept fstat()
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fstat(fd: c_int, statbuf: *mut libc::stat) -> c_int {
+    // Call original fstat first
+    let result = if let Some(orig_fstat) = ORIGINAL_FUNCTIONS.fstat {
+        unsafe { orig_fstat(fd, statbuf) }
+    } else {
+        return -1;
+    };
+
+    // If this is a virtual device fd, fake its device number
+    if result == 0 && !statbuf.is_null() && syscalls::is_virtual_device_fd(fd) {
+        if let Some(device_info) = syscalls::get_virtual_device_info(fd) {
+            tracing::debug!(
+                "fstat: faking device number for fd={}, node={}",
+                fd,
+                device_info.event_node
+            );
+
+            // Parse event/js number from node name
+            if device_info.event_node.starts_with("event") {
+                if let Ok(event_num) = device_info
+                    .event_node
+                    .trim_start_matches("event")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if device_info.event_node.starts_with("js") {
+                if let Ok(js_num) = device_info
+                    .event_node
+                    .trim_start_matches("js")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Intercept fstat64()
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fstat64(fd: c_int, statbuf: *mut libc::stat64) -> c_int {
+    let result = if let Some(orig_fstat64) = ORIGINAL_FUNCTIONS.fstat64 {
+        unsafe { orig_fstat64(fd, statbuf) }
+    } else {
+        return -1;
+    };
+
+    if result == 0 && !statbuf.is_null() && syscalls::is_virtual_device_fd(fd) {
+        if let Some(device_info) = syscalls::get_virtual_device_info(fd) {
+            tracing::debug!(
+                "fstat64: faking device number for fd={}, node={}",
+                fd,
+                device_info.event_node
+            );
+
+            if device_info.event_node.starts_with("event") {
+                if let Ok(event_num) = device_info
+                    .event_node
+                    .trim_start_matches("event")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if device_info.event_node.starts_with("js") {
+                if let Ok(js_num) = device_info
+                    .event_node
+                    .trim_start_matches("js")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Intercept __fxstat (glibc wrapper for fstat)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __fxstat(ver: c_int, fd: c_int, statbuf: *mut libc::stat) -> c_int {
+    // Get the function pointer - might not exist on newer glibc
+    let fxstat_fn: Option<unsafe extern "C" fn(c_int, c_int, *mut libc::stat) -> c_int> =
+        ORIGINAL_FUNCTIONS.fxstat;
+
+    let result = if let Some(orig_fxstat) = fxstat_fn {
+        unsafe { orig_fxstat(ver, fd, statbuf) }
+    } else if let Some(orig_fstat) = ORIGINAL_FUNCTIONS.fstat {
+        // Fallback to regular fstat
+        unsafe { orig_fstat(fd, statbuf) }
+    } else {
+        return -1;
+    };
+
+    // Same device number faking logic
+    if result == 0 && !statbuf.is_null() && syscalls::is_virtual_device_fd(fd) {
+        if let Some(device_info) = syscalls::get_virtual_device_info(fd) {
+            if device_info.event_node.starts_with("event") {
+                if let Ok(event_num) = device_info
+                    .event_node
+                    .trim_start_matches("event")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if device_info.event_node.starts_with("js") {
+                if let Ok(js_num) = device_info
+                    .event_node
+                    .trim_start_matches("js")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Intercept __fxstat64 (glibc wrapper for fstat64)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __fxstat64(ver: c_int, fd: c_int, statbuf: *mut libc::stat64) -> c_int {
+    let fxstat64_fn: Option<unsafe extern "C" fn(c_int, c_int, *mut libc::stat64) -> c_int> =
+        ORIGINAL_FUNCTIONS.fxstat64;
+
+    let result = if let Some(orig_fxstat64) = fxstat64_fn {
+        unsafe { orig_fxstat64(ver, fd, statbuf) }
+    } else if let Some(orig_fstat64) = ORIGINAL_FUNCTIONS.fstat64 {
+        unsafe { orig_fstat64(fd, statbuf) }
+    } else {
+        return -1;
+    };
+
+    if result == 0 && !statbuf.is_null() && syscalls::is_virtual_device_fd(fd) {
+        if let Some(device_info) = syscalls::get_virtual_device_info(fd) {
+            if device_info.event_node.starts_with("event") {
+                if let Ok(event_num) = device_info
+                    .event_node
+                    .trim_start_matches("event")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(13, 64 + event_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            } else if device_info.event_node.starts_with("js") {
+                if let Ok(js_num) = device_info
+                    .event_node
+                    .trim_start_matches("js")
+                    .parse::<u32>()
+                {
+                    unsafe {
+                        (*statbuf).st_rdev = libc::makedev(81, js_num);
+                        (*statbuf).st_mode = ((*statbuf).st_mode & !libc::S_IFMT) | libc::S_IFCHR;
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }

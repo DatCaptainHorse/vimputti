@@ -50,6 +50,7 @@ impl VirtualDevice {
         let event_node_clone = event_node.clone();
         tokio::spawn(async move {
             Self::accept_clients(
+                id,
                 listener,
                 clients_clone,
                 feedback_clients_clone,
@@ -70,7 +71,7 @@ impl VirtualDevice {
         tokio::spawn(async move {
             loop {
                 if let Ok((stream, _)) = feedback_listener.accept().await {
-                    tracing::debug!("Client connected to feedback socket");
+                    debug!("Client connected to feedback socket");
                     feedback_clients_clone.lock().await.push(stream);
                 }
             }
@@ -94,7 +95,7 @@ impl VirtualDevice {
             let config_clone = config.clone();
 
             tokio::spawn(async move {
-                Self::accept_joystick_clients(js_listener, js_clients_clone, config_clone).await;
+                Self::accept_joystick_clients(id, js_listener, js_clients_clone, config_clone).await;
             });
 
             info!("Created joystick node: {}", js_node);
@@ -121,6 +122,7 @@ impl VirtualDevice {
 
     /// Accept client connections to device socket
     async fn accept_clients(
+        id: DeviceId,
         listener: UnixListener,
         clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
         feedback_clients: Arc<Mutex<Vec<UnixStream>>>,
@@ -137,9 +139,12 @@ impl VirtualDevice {
 
                     let (mut read_half, mut write_half) = stream.into_split();
 
-                    // Send device config to the client as the first message
-                    // Format: 4-byte length prefix + JSON config
-                    match serde_json::to_vec(&config) {
+                    // Send handshake
+                    let handshake = DeviceHandshake {
+                        device_id: id,
+                        config: config.clone(),
+                    };
+                    match serde_json::to_vec(&handshake) {
                         Ok(config_json) => {
                             let len = config_json.len() as u32;
                             if let Err(e) = write_half.write_all(&len.to_le_bytes()).await {
@@ -203,6 +208,7 @@ impl VirtualDevice {
     }
 
     async fn accept_joystick_clients(
+        id: DeviceId,
         listener: UnixListener,
         clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
         config: DeviceConfig,
@@ -214,8 +220,12 @@ impl VirtualDevice {
 
                     let (_, mut write_half) = stream.into_split();
 
-                    // Send config
-                    match serde_json::to_vec(&config) {
+                    // Send handshake
+                    let handshake = DeviceHandshake {
+                        device_id: id,
+                        config: config.clone(),
+                    };
+                    match serde_json::to_vec(&handshake) {
                         Ok(config_json) => {
                             let len = config_json.len() as u32;
                             if write_half.write_all(&len.to_le_bytes()).await.is_err()

@@ -16,6 +16,10 @@ impl SysfsGenerator {
         Self::create_devices_virtual(&input_node, &event_node, config, base_path)?;
         Self::create_class_input_symlink(&event_node, &input_node, base_path)?;
         Self::create_udev_data_file(id, config, base_path)?;
+        // Create joystick udev data if device has buttons or axes
+        if !config.buttons.is_empty() || !config.axes.is_empty() {
+            Self::create_joystick_udev_data_file(id, config, base_path)?;
+        }
         Ok(())
     }
 
@@ -279,6 +283,108 @@ impl SysfsGenerator {
         Ok(())
     }
 
+    pub fn create_joystick_udev_data_file(
+        id: DeviceId,
+        config: &DeviceConfig,
+        base_path: &Path,
+    ) -> Result<()> {
+        let js_minor = id; // js0 = minor 0, js1 = 1, etc.
+        let data_file = format!("c81:{}", js_minor); // char device major 81
+
+        let udev_data_dir = base_path.join("udev_data");
+        std::fs::create_dir_all(&udev_data_dir)?;
+
+        // Generate unique initialization timestamp
+        let init_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros() as u64
+            + (id * 1000) + 500; // Slightly different from event device
+
+        let mut content = String::new();
+        let js_node = format!("js{}", id);
+
+        // Symlinks
+        content.push_str(&format!(
+            "S:input/by-path/platform-vimputti-device{}-joystick\n",
+            id
+        ));
+        content.push_str(&format!(
+            "S:input/by-id/platform-vimputti-{}-joystick\n",
+            js_node
+        ));
+
+        content.push_str(&format!("I:{}\n", init_time));
+        content.push_str("E:ID_INPUT=1\n");
+        content.push_str("E:ID_INPUT_JOYSTICK=1\n");
+        content.push_str(&format!("E:ID_VENDOR_ID={:04x}\n", config.vendor_id));
+        content.push_str(&format!("E:ID_MODEL_ID={:04x}\n", config.product_id));
+
+        let bus_name = match config.bustype {
+            BusType::Usb => "usb",
+            BusType::Bluetooth => "bluetooth",
+            BusType::Virtual => "virtual",
+        };
+        content.push_str(&format!("E:ID_BUS={}\n", bus_name));
+
+        let vendor_name = match config.vendor_id {
+            0x045e => "Microsoft",
+            0x054c => "Sony",
+            0x057e => "Nintendo",
+            _ => "Unknown",
+        };
+
+        content.push_str(&format!("E:ID_VENDOR={}\n", vendor_name));
+        content.push_str(&format!("E:ID_VENDOR_ENC={}\n", vendor_name));
+        content.push_str(&format!("E:ID_MODEL={}\n", config.name.replace(' ', "_")));
+        content.push_str(&format!(
+            "E:ID_MODEL_ENC={}\n",
+            config.name.replace(' ', "\\x20")
+        ));
+
+        if matches!(config.bustype, BusType::Usb) {
+            content.push_str("E:BUSNUM=253\n");
+            content.push_str(&format!("E:DEVNUM={:03}\n", id + 1));
+            content.push_str(&format!("E:ID_USB_VENDOR={}\n", vendor_name));
+            content.push_str(&format!("E:ID_USB_VENDOR_ENC={}\n", vendor_name));
+            content.push_str(&format!("E:ID_USB_VENDOR_ID={:04x}\n", config.vendor_id));
+            content.push_str(&format!(
+                "E:ID_USB_MODEL={}\n",
+                config.name.replace(' ', "_")
+            ));
+            content.push_str(&format!(
+                "E:ID_USB_MODEL_ENC={}\n",
+                config.name.replace(' ', "\\x20")
+            ));
+            content.push_str(&format!("E:ID_USB_MODEL_ID={:04x}\n", config.product_id));
+            content.push_str(&format!("E:ID_USB_REVISION={:04x}\n", config.version));
+            content.push_str(&format!("E:ID_SERIAL={}_{}\n", vendor_name, js_node));
+            content.push_str(&format!("E:ID_USB_SERIAL={}_{}\n", vendor_name, js_node));
+            content.push_str("E:ID_TYPE=hid\n");
+            content.push_str("E:ID_USB_TYPE=hid\n");
+            content.push_str("E:ID_USB_INTERFACES=:030000:\n");
+            content.push_str("E:ID_USB_INTERFACE_NUM=00\n");
+            content.push_str("E:ID_USB_DRIVER=usbhid\n");
+        }
+
+        content.push_str(&format!("E:ID_PATH=platform-vimputti-device{}\n", id));
+        content.push_str(&format!("E:ID_PATH_TAG=platform-vimputti-device{}\n", id));
+        content.push_str(&format!(
+            "E:ID_FOR_SEAT=input-platform-vimputti-device{}\n",
+            id
+        ));
+
+        content.push_str("E:TAGS=:seat:uaccess:\n");
+        content.push_str("G:seat\n");
+        content.push_str("G:uaccess\n");
+        content.push_str("Q:seat\n");
+        content.push_str("Q:uaccess\n");
+        content.push_str("V:1\n");
+
+        std::fs::write(udev_data_dir.join(&data_file), content)?;
+
+        Ok(())
+    }
+
     /// Write capability bitmasks
     fn write_capabilities(base_path: &Path, config: &DeviceConfig) -> Result<()> {
         let caps_dir = base_path.join("capabilities");
@@ -394,7 +500,8 @@ impl SysfsGenerator {
     pub fn remove_device_files(id: DeviceId, base_path: &Path) -> Result<()> {
         let event_node = format!("event{}", id);
         let input_node = format!("input{}", id);
-        let minor = 64 + id;
+        let event_minor = 64 + id;
+        let js_minor = id;
 
         // Remove class/input/eventX
         let _ = std::fs::remove_dir_all(base_path.join("sysfs/class/input").join(&event_node));
@@ -406,8 +513,9 @@ impl SysfsGenerator {
                 .join(&input_node),
         );
 
-        // Remove udev data files
-        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c13:{}", minor)));
+        // Remove udev data files (both event and joystick)
+        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c13:{}", event_minor)));
+        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c81:{}", js_minor)));
 
         Ok(())
     }
