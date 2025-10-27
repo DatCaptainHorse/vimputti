@@ -167,6 +167,41 @@ impl Button {
             _ => None,
         }
     }
+
+    /// Returns all standard button variants (without Custom)
+    pub fn all_standard() -> &'static [Button] {
+        &[
+            Button::A,
+            Button::B,
+            Button::X,
+            Button::Y,
+            Button::UpperLeftBumper,
+            Button::UpperRightBumper,
+            Button::LowerLeftTrigger,
+            Button::LowerRightTrigger,
+            Button::LeftStick,
+            Button::RightStick,
+            Button::DPadUp,
+            Button::DPadDown,
+            Button::DPadLeft,
+            Button::DPadRight,
+            Button::Start,
+            Button::Select,
+            Button::Guide,
+        ]
+    }
+
+    /// Returns all standard button event codes
+    pub fn all_standard_codes() -> &'static [u16] {
+        &[
+            0x130, 0x131, 0x133, 0x134, // A, B, X, Y
+            0x136, 0x137, // Upper bumpers
+            0x138, 0x139, // Lower triggers
+            0x13d, 0x13e, // Stick clicks
+            0x220, 0x221, 0x222, 0x223, // DPad
+            0x13b, 0x13a, 0x13c, // Start, Select, Guide
+        ]
+    }
 }
 
 /// Controller axis
