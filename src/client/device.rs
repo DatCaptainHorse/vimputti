@@ -1,9 +1,7 @@
 use crate::client::ClientInner;
-use crate::client::batch::BatchManager;
 use crate::protocol::*;
 use anyhow::Result;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -22,19 +20,14 @@ pub struct VirtualController {
     client: Arc<ClientInner>,
     device_id: DeviceId,
     event_node: String,
-    batch_manager: BatchManager,
     feedback_rx: Option<broadcast::Receiver<FeedbackEvent>>,
 }
 impl VirtualController {
     pub(crate) fn new(client: Arc<ClientInner>, device_id: DeviceId, event_node: String) -> Self {
-        let batch_manager =
-            BatchManager::new(Arc::clone(&client), device_id, Duration::from_millis(1));
-
         Self {
             client,
             device_id,
             event_node,
-            batch_manager,
             feedback_rx: None,
         }
     }
@@ -49,53 +42,41 @@ impl VirtualController {
         &self.event_node
     }
 
-    /// Set the auto-flush timeout for batched events
-    pub fn set_batch_timeout(&mut self, timeout: Duration) {
-        self.batch_manager.set_timeout(timeout);
-    }
-
     /// Press or release a button
-    pub fn button(&self, button: Button, pressed: bool) {
-        self.batch_manager
-            .queue_event(InputEvent::Button { button, pressed });
+    pub async fn button(&self, button: Button, pressed: bool) -> Result<()> {
+        self.send_events(vec![InputEvent::Button { button, pressed }])
+            .await
     }
 
     /// Convenience method to press a button
-    pub fn button_press(&self, button: Button) {
-        self.button(button, true);
+    pub async fn button_press(&self, button: Button) -> Result<()> {
+        self.button(button, true).await
     }
 
     /// Convenience method to release a button
-    pub fn button_release(&self, button: Button) {
-        self.button(button, false);
+    pub async fn button_release(&self, button: Button) -> Result<()> {
+        self.button(button, false).await
     }
 
     /// Move an axis to a specific value
-    pub fn axis(&self, axis: Axis, value: i32) {
-        self.batch_manager
-            .queue_event(InputEvent::Axis { axis, value });
+    pub async fn axis(&self, axis: Axis, value: i32) -> Result<()> {
+        self.send_events(vec![InputEvent::Axis { axis, value }])
+            .await
     }
 
     /// Send a raw Linux input event
-    pub fn raw_event(&self, event_type: u16, code: u16, value: i32) {
-        self.batch_manager.queue_event(InputEvent::Raw {
+    pub async fn raw_event(&self, event_type: u16, code: u16, value: i32) -> Result<()> {
+        self.send_events(vec![InputEvent::Raw {
             event_type,
             code,
             value,
-        });
+        }])
+        .await
     }
 
     /// Sends a sync (SYN_REPORT) event
-    pub fn sync(&self) {
-        self.batch_manager.queue_event(InputEvent::Sync);
-    }
-
-    /// Manually flush all pending events immediately
-    ///
-    /// Events are automatically flushed after the batch timeout,
-    /// however this method allows immediate flushing for specific needs.
-    pub async fn flush(&self) -> Result<()> {
-        self.batch_manager.flush().await
+    pub async fn sync(&self) -> Result<()> {
+        self.send_events(vec![InputEvent::Sync]).await
     }
 
     /// Send events and wait for them to be delivered

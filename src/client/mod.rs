@@ -7,7 +7,6 @@ use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-mod batch;
 mod device;
 
 pub use device::VirtualController;
