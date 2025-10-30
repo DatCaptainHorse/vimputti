@@ -78,32 +78,32 @@ impl VirtualDevice {
         });
 
         // Create joystick interface if device has axes or buttons
-        let (joystick_node, joystick_socket_path, joystick_clients) = if !config.buttons.is_empty()
-            || !config.axes.is_empty()
-        {
-            let js_node = format!("js{}", id);
-            let js_socket_path = base_path.join("devices").join(&js_node);
+        let (joystick_node, joystick_socket_path, joystick_clients) =
+            if !config.buttons.is_empty() || !config.axes.is_empty() {
+                let js_node = format!("js{}", id);
+                let js_socket_path = base_path.join("devices").join(&js_node);
 
-            // Remove old socket if exists
-            let _ = std::fs::remove_file(&js_socket_path);
+                // Remove old socket if exists
+                let _ = std::fs::remove_file(&js_socket_path);
 
-            // Create joystick socket
-            let js_listener = UnixListener::bind(&js_socket_path)?;
+                // Create joystick socket
+                let js_listener = UnixListener::bind(&js_socket_path)?;
 
-            let js_clients = Arc::new(Mutex::new(Vec::new()));
-            let js_clients_clone = js_clients.clone();
-            let config_clone = config.clone();
+                let js_clients = Arc::new(Mutex::new(Vec::new()));
+                let js_clients_clone = js_clients.clone();
+                let config_clone = config.clone();
 
-            tokio::spawn(async move {
-                Self::accept_joystick_clients(id, js_listener, js_clients_clone, config_clone).await;
-            });
+                tokio::spawn(async move {
+                    Self::accept_joystick_clients(id, js_listener, js_clients_clone, config_clone)
+                        .await;
+                });
 
-            info!("Created joystick node: {}", js_node);
+                info!("Created joystick node: {}", js_node);
 
-            (Some(js_node), Some(js_socket_path), js_clients)
-        } else {
-            (None, None, Arc::new(Mutex::new(Vec::new())))
-        };
+                (Some(js_node), Some(js_socket_path), js_clients)
+            } else {
+                (None, None, Arc::new(Mutex::new(Vec::new())))
+            };
 
         Ok(Self {
             id,
@@ -260,21 +260,8 @@ impl VirtualDevice {
 
     /// Send evdev events
     async fn send_evdev_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
-        let mut has_sync = false;
-        let mut linux_events: Vec<LinuxInputEvent> =
+        let linux_events: Vec<LinuxInputEvent> =
             events.iter().map(|e| e.to_linux_input_event()).collect();
-
-        for event in &linux_events {
-            if event.event_type == EV_SYN && event.code == SYN_REPORT {
-                has_sync = true;
-                break;
-            }
-        }
-
-        // Add SYN_REPORT if not present
-        if !has_sync && !linux_events.is_empty() {
-            linux_events.push(LinuxInputEvent::new(EV_SYN, SYN_REPORT, 0));
-        }
 
         // Convert to bytes
         let mut data = Vec::new();
