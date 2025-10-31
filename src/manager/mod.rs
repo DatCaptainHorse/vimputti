@@ -32,6 +32,8 @@ pub struct Manager {
     devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
     /// Next device ID to assign
     next_device_id: Arc<Mutex<DeviceId>>,
+    /// Pool of device IDs available for reuse
+    free_device_ids: Arc<Mutex<Vec<DeviceId>>>,
     /// udev event broadcaster
     udev_broadcaster: Arc<UdevBroadcaster>,
     /// netlink event broadcaster
@@ -63,6 +65,7 @@ impl Manager {
         let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let next_device_id = Arc::new(Mutex::new(0));
+        let free_device_ids = Arc::new(Mutex::new(Vec::new()));
 
         // Create uinput emulator with reference to device registry
         let uinput_emulator = Arc::new(UinputEmulator::new(
@@ -78,6 +81,7 @@ impl Manager {
             control_socket_path: socket_path.to_path_buf(),
             _lock_file: lock_file,
             next_device_id,
+            free_device_ids,
             devices,
             udev_broadcaster,
             netlink_broadcaster,
@@ -127,6 +131,7 @@ impl Manager {
                 Ok((stream, _addr)) => {
                     let devices = self.devices.clone();
                     let next_device_id = self.next_device_id.clone();
+                    let free_device_ids = self.free_device_ids.clone();
                     let base_path = self.base_path.clone();
                     let udev_broadcaster = self.udev_broadcaster.clone();
                     let netlink_broadcaster = self.netlink_broadcaster.clone();
@@ -137,6 +142,7 @@ impl Manager {
                             stream,
                             devices,
                             next_device_id,
+                            free_device_ids,
                             base_path,
                             udev_broadcaster,
                             netlink_broadcaster,
@@ -160,6 +166,7 @@ impl Manager {
         stream: UnixStream,
         devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
         next_device_id: Arc<Mutex<DeviceId>>,
+        free_device_ids: Arc<Mutex<Vec<DeviceId>>>,
         base_path: PathBuf,
         udev_broadcaster: Arc<UdevBroadcaster>,
         netlink_broadcaster: Arc<NetlinkBroadcaster>,
@@ -191,6 +198,7 @@ impl Manager {
                         message.command,
                         &devices,
                         &next_device_id,
+                        &free_device_ids,
                         &base_path,
                         &udev_broadcaster,
                         &netlink_broadcaster,
@@ -237,6 +245,7 @@ impl Manager {
         command: ControlCommand,
         devices: &Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
         next_device_id: &Arc<Mutex<DeviceId>>,
+        free_device_ids: &Arc<Mutex<Vec<DeviceId>>>,
         base_path: &Path,
         udev_broadcaster: &Arc<UdevBroadcaster>,
         netlink_broadcaster: &Arc<NetlinkBroadcaster>,
@@ -244,11 +253,19 @@ impl Manager {
     ) -> ControlResult {
         match command {
             ControlCommand::CreateDevice { config } => {
+                // Try to reuse an ID first, otherwise next
                 let device_id = {
-                    let mut next_id = next_device_id.lock().await;
-                    let id = *next_id;
-                    *next_id += 1;
-                    id
+                    let mut free_ids = free_device_ids.lock().await;
+                    if let Some(id) = free_ids.pop() {
+                        debug!("Re-using device ID: {}", id);
+                        id
+                    } else {
+                        let mut next_id = next_device_id.lock().await;
+                        let id = *next_id;
+                        *next_id += 1;
+                        debug!("Using next device ID: {}", id);
+                        id
+                    }
                 };
 
                 debug!(
@@ -287,6 +304,10 @@ impl Manager {
                 match device {
                     Some(device) => {
                         info!("Destroyed device {}", device_id);
+
+                        // Add the ID to the re-usable pool
+                        free_device_ids.lock().await.push(device_id);
+                        debug!("Marking device ID {} as re-usable", device_id);
 
                         // Broadcast udev remove event
                         if let Err(e) = udev_broadcaster.broadcast_remove(device_id, &device.config)
