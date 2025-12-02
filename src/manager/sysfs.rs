@@ -13,8 +13,8 @@ impl SysfsGenerator {
     ) -> Result<()> {
         let event_node = format!("event{}", id);
         let input_node = format!("input{}", id);
-        Self::create_devices_virtual(&input_node, &event_node, config, base_path)?;
-        Self::create_class_input_symlink(&event_node, &input_node, base_path)?;
+        //Self::create_devices_virtual(&input_node, &event_node, config, base_path)?;
+        //Self::create_class_input_symlink(&event_node, &input_node, base_path)?;
         Self::create_udev_data_file(id, config, base_path)?;
         // Create joystick udev data if device has buttons or axes
         if !config.buttons.is_empty() || !config.axes.is_empty() {
@@ -148,10 +148,13 @@ impl SysfsGenerator {
         std::fs::write(input_base.join("uevent"), uevent_content)?;
 
         // Event node properties
-        std::fs::write(
-            event_path.join("dev"),
-            format!("13:{}\n", event_node.trim_start_matches("event")),
-        )?;
+        let device_id_num = event_node
+            .trim_start_matches("event")
+            .parse::<u64>()
+            .unwrap_or(0);
+        let event_minor = 64 + device_id_num; // event0 = 64, event1 = 65, etc.
+
+        std::fs::write(event_path.join("dev"), format!("13:{}\n", event_minor))?;
 
         // Create subsystem symlink
         let subsystem_link = event_path.join("subsystem");
@@ -161,7 +164,7 @@ impl SysfsGenerator {
         // Create device symlink: eventX/device -> ..
         let device_link = event_path.join("device");
         let _ = std::fs::remove_file(&device_link);
-        let _ = std::fs::remove_dir_all(&device_link); // Remove if it's a directory
+        let _ = std::fs::remove_dir_all(&device_link);
         std::os::unix::fs::symlink("..", &device_link)?;
 
         // Write event uevent
@@ -169,8 +172,7 @@ impl SysfsGenerator {
             "MAJOR=13\n\
              MINOR={}\n\
              DEVNAME=input/{}\n",
-            event_node.trim_start_matches("event"),
-            event_node
+            event_minor, event_node
         );
         std::fs::write(event_path.join("uevent"), event_uevent)?;
 
@@ -298,7 +300,8 @@ impl SysfsGenerator {
         let init_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_micros() as u64
-            + (id * 1000) + 500; // Slightly different from event device
+            + (id * 1000)
+            + 500; // Slightly different from event device
 
         let mut content = String::new();
         let js_node = format!("js{}", id);
@@ -514,8 +517,16 @@ impl SysfsGenerator {
         );
 
         // Remove udev data files (both event and joystick)
-        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c13:{}", event_minor)));
-        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c81:{}", js_minor)));
+        let _ = std::fs::remove_file(
+            base_path
+                .join("udev_data")
+                .join(format!("c13:{}", event_minor)),
+        );
+        let _ = std::fs::remove_file(
+            base_path
+                .join("udev_data")
+                .join(format!("c81:{}", js_minor)),
+        );
 
         Ok(())
     }

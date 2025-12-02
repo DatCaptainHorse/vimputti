@@ -94,7 +94,7 @@ pub struct UdevBroadcaster {
 impl UdevBroadcaster {
     /// Create a new udev broadcaster
     pub fn new(base_path: &Path) -> Result<Self> {
-        let socket_path = base_path.join("udev");
+        let socket_path = base_path.join("control");
 
         // Remove old socket if exists
         let _ = std::fs::remove_file(&socket_path);

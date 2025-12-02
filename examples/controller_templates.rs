@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
 
     xbox.button_press(Button::A);
     xbox.axis(Axis::LeftStickX, 16384);
-    xbox.flush().await?;
+    xbox.sync().await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(xbox);
@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     ps5.button_press(Button::X);
     ps5.axis(Axis::RightStickY, 128);
-    ps5.flush().await?;
+    ps5.sync().await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(ps5);
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     switch.button_press(Button::B); // A button on Nintendo layout
     switch.axis(Axis::LeftStickX, -10000);
-    switch.flush().await?;
+    switch.sync().await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(switch);
@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
 
     custom.button_press(Button::Start);
     custom.axis(Axis::RightStickX, 20000);
-    custom.flush().await?;
+    custom.sync().await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(custom);

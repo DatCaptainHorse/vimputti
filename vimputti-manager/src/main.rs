@@ -12,6 +12,9 @@ struct Args {
     /// Instance number (used to generate socket path)
     #[arg(short, long, default_value = "0")]
     instance: u32,
+    /// Use real directories rather than /tmp ones
+    #[arg(short, long, default_value = "false")]
+    use_real_dirs: bool,
 }
 
 #[tokio::main]
@@ -36,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Socket path: {}", socket_path.display());
 
     // Create and run manager
-    let mut manager = Manager::new(&socket_path)?;
+    let mut manager = Manager::new(&socket_path, args.use_real_dirs)?;
     manager.run().await?;
 
     Ok(())

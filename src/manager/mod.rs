@@ -43,50 +43,88 @@ pub struct Manager {
 }
 impl Manager {
     /// Create a new manager instance
-    pub fn new(socket_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn new(socket_path: impl AsRef<Path>, use_real_dirs: bool) -> anyhow::Result<Self> {
         let socket_path = socket_path.as_ref();
-        let base_path = socket_path.parent().unwrap().join("vimputti");
-
-        // Create base directory structure
-        std::fs::create_dir_all(&base_path)?;
-        std::fs::create_dir_all(base_path.join("devices"))?;
-        std::fs::create_dir_all(base_path.join("sysfs/class/input"))?;
-        std::fs::create_dir_all(base_path.join("sysfs/devices/virtual/input"))?;
 
         // Acquire lock file
         let lock_path = socket_path.with_extension("lock");
         let lock_file = LockFile::acquire(&lock_path)?;
 
-        // Create udev broadcaster
-        let udev_broadcaster = Arc::new(UdevBroadcaster::new(&base_path)?);
-        // Create netlink broadcaster
-        let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new()?);
+        // Create base directory structure
+        if !use_real_dirs {
+            let base_path = socket_path.parent().unwrap().join("vimputti");
+            std::fs::create_dir_all(&base_path)?;
+            std::fs::create_dir_all(base_path.join("devices"))?;
+            std::fs::create_dir_all(base_path.join("sysfs/class/input"))?;
+            std::fs::create_dir_all(base_path.join("sysfs/devices/virtual/input"))?;
 
-        let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let next_device_id = Arc::new(Mutex::new(0));
-        let free_device_ids = Arc::new(Mutex::new(Vec::new()));
+            // Create udev broadcaster
+            let udev_broadcaster = Arc::new(UdevBroadcaster::new(&base_path)?);
 
-        // Create uinput emulator with reference to device registry
-        let uinput_emulator = Arc::new(UinputEmulator::new(
-            &base_path,
-            devices.clone(),
-            next_device_id.clone(),
-        )?);
+            // Create netlink broadcaster
+            let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new()?);
 
-        info!("Manager initialized at {}", socket_path.display());
+            let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            let next_device_id = Arc::new(Mutex::new(100));
+            let free_device_ids = Arc::new(Mutex::new(Vec::new()));
 
-        Ok(Self {
-            base_path,
-            control_socket_path: socket_path.to_path_buf(),
-            _lock_file: lock_file,
-            next_device_id,
-            free_device_ids,
-            devices,
-            udev_broadcaster,
-            netlink_broadcaster,
-            uinput_emulator,
-        })
+            // Create uinput emulator with reference to device registry
+            let uinput_emulator = Arc::new(UinputEmulator::new(
+                &base_path,
+                devices.clone(),
+                next_device_id.clone(),
+            )?);
+
+            info!("Manager initialized at {} - with fake dirs", socket_path.display());
+
+            Ok(Self {
+                base_path,
+                control_socket_path: socket_path.to_path_buf(),
+                _lock_file: lock_file,
+                next_device_id,
+                free_device_ids,
+                devices,
+                udev_broadcaster,
+                netlink_broadcaster,
+                uinput_emulator,
+            })
+        } else {
+            std::fs::create_dir_all("/dev/input")?;
+
+            // Create udev broadcaster
+            std::fs::create_dir_all("/run/udev")?;
+            let udev_broadcaster = Arc::new(UdevBroadcaster::new("/run/udev".as_ref())?);
+
+            // Create netlink broadcaster
+            let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new()?);
+
+            let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            let next_device_id = Arc::new(Mutex::new(100));
+            let free_device_ids = Arc::new(Mutex::new(Vec::new()));
+
+            // Create uinput emulator with reference to device registry
+            let uinput_emulator = Arc::new(UinputEmulator::new(
+                "/dev",
+                devices.clone(),
+                next_device_id.clone(),
+            )?);
+
+            info!("Manager initialized at {} - with real dirs", socket_path.display());
+
+            Ok(Self {
+                base_path: PathBuf::from("/dev/input"),
+                control_socket_path: socket_path.to_path_buf(),
+                _lock_file: lock_file,
+                next_device_id,
+                free_device_ids,
+                devices,
+                udev_broadcaster,
+                netlink_broadcaster,
+                uinput_emulator,
+            })
+        }
     }
 
     /// Run the manager main loop

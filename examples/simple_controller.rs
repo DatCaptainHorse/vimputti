@@ -33,8 +33,8 @@ async fn main() -> anyhow::Result<()> {
     device.axis(Axis::LeftStickX, 0);
     device.axis(Axis::LeftStickY, 0);
 
-    // Manually flush to ensure events are sent
-    device.flush().await?;
+    // Sync
+    device.sync().await?;
 
     println!("Test complete!");
 
