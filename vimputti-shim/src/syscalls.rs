@@ -6,8 +6,8 @@ use std::os::unix::io::RawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use tracing::{debug, trace};
-use vimputti::*;
 use vimputti::protocol::DeviceHandshake;
+use vimputti::*;
 
 lazy_static::lazy_static! {
     // Track which FDs are our virtual device sockets
@@ -126,7 +126,10 @@ pub fn open_device_node(socket_path: &str, _flags: c_int) -> c_int {
                     match stream.read_exact(&mut handshake_buf) {
                         Ok(_) => match serde_json::from_slice::<DeviceHandshake>(&handshake_buf) {
                             Ok(handshake) => {
-                                debug!("Successfully received device handshake: {}", handshake.config.name);
+                                debug!(
+                                    "Successfully received device handshake: {}",
+                                    handshake.config.name
+                                );
                                 Some(handshake)
                             }
                             Err(e) => {
@@ -198,7 +201,7 @@ pub fn is_udev_monitor_fd(fd: RawFd) -> bool {
 }
 
 /// Handle ioctl() calls on virtual device FDs
-pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaListImpl) -> c_int {
+pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaList) -> c_int {
     // Get device info
     let device_fds = VIRTUAL_DEVICE_FDS.lock();
     let device_info = device_fds.get(&fd).cloned();
@@ -217,7 +220,7 @@ pub unsafe fn handle_ioctl(fd: RawFd, request: c_uint, args: &mut std::ffi::VaLi
 unsafe fn handle_joystick_ioctl(
     _fd: RawFd,
     request: u32,
-    args: &mut std::ffi::VaListImpl,
+    args: &mut std::ffi::VaList,
     device_info: &DeviceInfo,
 ) -> c_int {
     // Joystick interface ioctl constants
@@ -332,7 +335,7 @@ unsafe fn handle_joystick_ioctl(
 unsafe fn handle_evdev_ioctl(
     fd: RawFd,
     request: c_uint,
-    args: &mut std::ffi::VaListImpl,
+    args: &mut std::ffi::VaList,
     device_info: &DeviceInfo,
 ) -> c_int {
     const EVIOCGVERSION: c_uint = 0x80044501;
@@ -948,7 +951,7 @@ fn send_uinput_request(fd: RawFd, request: vimputti::protocol::UinputRequest) ->
 pub unsafe fn handle_uinput_ioctl(
     fd: RawFd,
     request: c_uint,
-    args: &mut std::ffi::VaListImpl,
+    args: &mut std::ffi::VaList,
 ) -> c_int {
     const UI_SET_EVBIT: c_uint = 0x40045564;
     const UI_SET_KEYBIT: c_uint = 0x40045565;

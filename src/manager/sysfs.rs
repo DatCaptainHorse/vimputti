@@ -298,7 +298,8 @@ impl SysfsGenerator {
         let init_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_micros() as u64
-            + (id * 1000) + 500; // Slightly different from event device
+            + (id * 1000)
+            + 500; // Slightly different from event device
 
         let mut content = String::new();
         let js_node = format!("js{}", id);
@@ -514,8 +515,16 @@ impl SysfsGenerator {
         );
 
         // Remove udev data files (both event and joystick)
-        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c13:{}", event_minor)));
-        let _ = std::fs::remove_file(base_path.join("udev_data").join(format!("c81:{}", js_minor)));
+        let _ = std::fs::remove_file(
+            base_path
+                .join("udev_data")
+                .join(format!("c13:{}", event_minor)),
+        );
+        let _ = std::fs::remove_file(
+            base_path
+                .join("udev_data")
+                .join(format!("c81:{}", js_minor)),
+        );
 
         Ok(())
     }
