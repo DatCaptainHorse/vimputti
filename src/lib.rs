@@ -7,11 +7,12 @@ pub mod client;
 pub mod manager;
 pub mod protocol;
 pub mod templates;
+pub mod uinput;
 
 // Re-export commonly used types
 pub use protocol::{
     Axis, AxisConfig, BusType, Button, DeviceConfig, DeviceId, DeviceInfo, EV_ABS, EV_FF, EV_KEY,
-    EV_REL, EV_SYN, InputEvent, LinuxAbsEvent, LinuxJsEvent, TimeVal,
+    EV_REL, EV_SYN, FeedbackEvent, InputEvent, LinuxAbsEvent, LinuxJsEvent, TimeVal,
 };
 
 pub use client::{VimputtiClient, VirtualController};

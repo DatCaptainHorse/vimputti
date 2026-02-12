@@ -9,17 +9,9 @@ use tracing::{debug, error, info, trace, warn};
 
 mod device;
 mod lock;
-mod netlink;
-mod sysfs;
-mod udev;
-mod uinput;
 
-use crate::manager::netlink::NetlinkBroadcaster;
 pub use device::VirtualDevice;
 pub use lock::LockFile;
-pub use sysfs::SysfsGenerator;
-pub use udev::UdevBroadcaster;
-pub use uinput::UinputEmulator;
 
 pub struct Manager {
     /// Base directory for all vimputti files
@@ -34,45 +26,22 @@ pub struct Manager {
     next_device_id: Arc<Mutex<DeviceId>>,
     /// Pool of device IDs available for reuse
     free_device_ids: Arc<Mutex<Vec<DeviceId>>>,
-    /// udev event broadcaster
-    udev_broadcaster: Arc<UdevBroadcaster>,
-    /// netlink event broadcaster
-    netlink_broadcaster: Arc<NetlinkBroadcaster>,
-    /// uinput emulator
-    uinput_emulator: Arc<UinputEmulator>,
 }
+
 impl Manager {
     /// Create a new manager instance
     pub fn new(socket_path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let socket_path = socket_path.as_ref();
-        let base_path = socket_path.parent().unwrap().join("vimputti");
+        let base_path = std::env::var("VIMPUTTI_BASE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| socket_path.parent().unwrap().join("vimputti"));
 
-        // Create base directory structure
+        // Create base directory
         std::fs::create_dir_all(&base_path)?;
-        std::fs::create_dir_all(base_path.join("devices"))?;
-        std::fs::create_dir_all(base_path.join("sysfs/class/input"))?;
-        std::fs::create_dir_all(base_path.join("sysfs/devices/virtual/input"))?;
 
         // Acquire lock file
         let lock_path = socket_path.with_extension("lock");
         let lock_file = LockFile::acquire(&lock_path)?;
-
-        // Create udev broadcaster
-        let udev_broadcaster = Arc::new(UdevBroadcaster::new(&base_path)?);
-        // Create netlink broadcaster
-        let netlink_broadcaster = Arc::new(NetlinkBroadcaster::new()?);
-
-        let devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let next_device_id = Arc::new(Mutex::new(0));
-        let free_device_ids = Arc::new(Mutex::new(Vec::new()));
-
-        // Create uinput emulator with reference to device registry
-        let uinput_emulator = Arc::new(UinputEmulator::new(
-            &base_path,
-            devices.clone(),
-            next_device_id.clone(),
-        )?);
 
         info!("Manager initialized at {}", socket_path.display());
 
@@ -80,12 +49,9 @@ impl Manager {
             base_path,
             control_socket_path: socket_path.to_path_buf(),
             _lock_file: lock_file,
-            next_device_id,
-            free_device_ids,
-            devices,
-            udev_broadcaster,
-            netlink_broadcaster,
-            uinput_emulator,
+            next_device_id: Arc::new(Mutex::new(0)),
+            free_device_ids: Arc::new(Mutex::new(Vec::new())),
+            devices: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -97,7 +63,7 @@ impl Manager {
         // Bind control socket
         let listener = UnixListener::bind(&self.control_socket_path)?;
 
-        // Set socket permissions to allow all users in container
+        // Set socket permissions
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -112,20 +78,6 @@ impl Manager {
             self.control_socket_path.display()
         );
 
-        // Start udev broadcaster
-        let udev_broadcaster = self.udev_broadcaster.clone();
-        tokio::spawn(async move {
-            udev_broadcaster.run().await;
-        });
-
-        // Start uinput emulator
-        let uinput_emulator = self.uinput_emulator.clone();
-        tokio::spawn(async move {
-            if let Err(e) = uinput_emulator.run().await {
-                error!("uinput emulator error: {}", e);
-            }
-        });
-
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
@@ -133,22 +85,11 @@ impl Manager {
                     let next_device_id = self.next_device_id.clone();
                     let free_device_ids = self.free_device_ids.clone();
                     let base_path = self.base_path.clone();
-                    let udev_broadcaster = self.udev_broadcaster.clone();
-                    let netlink_broadcaster = self.netlink_broadcaster.clone();
-                    let uinput_emulator = self.uinput_emulator.clone();
 
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_client(
-                            stream,
-                            devices,
-                            next_device_id,
-                            free_device_ids,
-                            base_path,
-                            udev_broadcaster,
-                            netlink_broadcaster,
-                            uinput_emulator,
-                        )
-                        .await
+                        if let Err(e) =
+                            Self::handle_client(stream, devices, next_device_id, free_device_ids)
+                                .await
                         {
                             error!("Client handler error: {}", e);
                         }
@@ -167,10 +108,6 @@ impl Manager {
         devices: Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
         next_device_id: Arc<Mutex<DeviceId>>,
         free_device_ids: Arc<Mutex<Vec<DeviceId>>>,
-        base_path: PathBuf,
-        udev_broadcaster: Arc<UdevBroadcaster>,
-        netlink_broadcaster: Arc<NetlinkBroadcaster>,
-        uinput_emulator: Arc<UinputEmulator>,
     ) -> anyhow::Result<()> {
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
@@ -179,10 +116,7 @@ impl Manager {
         loop {
             line.clear();
             match reader.read_line(&mut line).await {
-                Ok(0) => {
-                    // Connection closed cleanly
-                    break;
-                }
+                Ok(0) => break,
                 Ok(_) => {
                     let message: ControlMessage = match serde_json::from_str(&line) {
                         Ok(msg) => msg,
@@ -199,10 +133,6 @@ impl Manager {
                         &devices,
                         &next_device_id,
                         &free_device_ids,
-                        &base_path,
-                        &udev_broadcaster,
-                        &netlink_broadcaster,
-                        &uinput_emulator,
                     )
                     .await;
 
@@ -213,7 +143,6 @@ impl Manager {
 
                     let response_json = serde_json::to_string(&response)?;
 
-                    // Try to write response, but don't error on broken pipe
                     if let Err(e) = writer.write_all(response_json.as_bytes()).await {
                         if e.kind() == std::io::ErrorKind::BrokenPipe {
                             break;
@@ -246,14 +175,10 @@ impl Manager {
         devices: &Arc<Mutex<HashMap<DeviceId, Arc<VirtualDevice>>>>,
         next_device_id: &Arc<Mutex<DeviceId>>,
         free_device_ids: &Arc<Mutex<Vec<DeviceId>>>,
-        base_path: &Path,
-        udev_broadcaster: &Arc<UdevBroadcaster>,
-        netlink_broadcaster: &Arc<NetlinkBroadcaster>,
-        uinput_emulator: &Arc<UinputEmulator>,
     ) -> ControlResult {
         match command {
             ControlCommand::CreateDevice { config } => {
-                // Try to reuse an ID first, otherwise next
+                // Get device ID
                 let device_id = {
                     let mut free_ids = free_device_ids.lock().await;
                     if let Some(id) = free_ids.pop() {
@@ -272,56 +197,41 @@ impl Manager {
                     "Creating device {} with config: name={}, vendor_id=0x{:04x}, product_id=0x{:04x}",
                     device_id, config.name, config.vendor_id, config.product_id
                 );
-                match VirtualDevice::create(device_id, config.clone(), base_path).await {
-                    Ok(device) => {
+
+                // Create device (blocking operation, run in spawn_blocking)
+                let config_clone = config.clone();
+
+                match tokio::task::spawn_blocking(move || {
+                    VirtualDevice::create(device_id, config_clone)
+                })
+                .await
+                {
+                    Ok(Ok(device)) => {
                         let event_node = device.event_node.clone();
                         devices.lock().await.insert(device_id, Arc::new(device));
 
                         info!("Created device {} as {}", device_id, event_node);
-
-                        // Broadcast udev add event (after device is ready)
-                        if let Err(e) = udev_broadcaster.broadcast_add(device_id, &config) {
-                            debug!("Failed to broadcast udev add event: {}", e);
-                        }
-
-                        // Also broadcast via real netlink
-                        if let Err(e) = netlink_broadcaster.broadcast_add(device_id, &config) {
-                            debug!("Failed to broadcast netlink add event: {}", e);
-                        }
 
                         ControlResult::DeviceCreated {
                             device_id,
                             event_node,
                         }
                     }
-                    Err(e) => ControlResult::Error {
+                    Ok(Err(e)) => ControlResult::Error {
                         message: format!("Failed to create device: {}", e),
+                    },
+                    Err(e) => ControlResult::Error {
+                        message: format!("Task join error: {}", e),
                     },
                 }
             }
             ControlCommand::DestroyDevice { device_id } => {
                 let device = devices.lock().await.remove(&device_id);
                 match device {
-                    Some(device) => {
+                    Some(_device) => {
                         info!("Destroyed device {}", device_id);
-
-                        // Add the ID to the re-usable pool
                         free_device_ids.lock().await.push(device_id);
                         debug!("Marking device ID {} as re-usable", device_id);
-
-                        // Broadcast udev remove event
-                        if let Err(e) = udev_broadcaster.broadcast_remove(device_id, &device.config)
-                        {
-                            debug!("Failed to broadcast udev remove event: {}", e);
-                        }
-
-                        // Also broadcast via real netlink
-                        if let Err(e) =
-                            netlink_broadcaster.broadcast_remove(device_id, &device.config)
-                        {
-                            debug!("Failed to broadcast netlink remove event: {}", e);
-                        }
-
                         ControlResult::DeviceDestroyed
                     }
                     None => ControlResult::Error {
@@ -337,23 +247,51 @@ impl Manager {
 
                 match device {
                     Some(device) => {
-                        let send_result = device.send_events(&events).await;
-
-                        // Also mirror to uinput devices if any
-                        let _ = uinput_emulator
-                            .mirror_to_uinput_devices(device_id, &events)
-                            .await;
-
-                        match send_result {
-                            Ok(()) => ControlResult::InputSent,
-                            Err(e) => ControlResult::Error {
+                        // Send events (blocking call, use spawn_blocking)
+                        match tokio::task::spawn_blocking(move || device.send_events(&events)).await
+                        {
+                            Ok(Ok(())) => ControlResult::InputSent,
+                            Ok(Err(e)) => ControlResult::Error {
                                 message: format!("Failed to send input: {}", e),
+                            },
+                            Err(e) => ControlResult::Error {
+                                message: format!("Task join error: {}", e),
                             },
                         }
                     }
                     None => ControlResult::Error {
                         message: format!("Device {} not found", device_id),
                     },
+                }
+            }
+            ControlCommand::PollFeedback { device_id } => {
+                debug!("Polling feedback for device {}", device_id);
+
+                let devices_lock = devices.lock().await;
+                if let Some(device) = devices_lock.get(&device_id) {
+                    let device_clone = Arc::clone(device);
+                    drop(devices_lock);
+
+                    // Try to read feedback in blocking task (non-blocking read with timeout)
+                    match tokio::task::spawn_blocking(move || device_clone.read_feedback_event())
+                        .await
+                    {
+                        Ok(Ok(event)) => {
+                            debug!("Feedback event polled: {:?}", event);
+                            ControlResult::FeedbackPolled { event: Some(event) }
+                        }
+                        Ok(Err(_)) => {
+                            // No feedback available (EAGAIN or other read error)
+                            ControlResult::FeedbackPolled { event: None }
+                        }
+                        Err(e) => ControlResult::Error {
+                            message: format!("Failed to poll feedback: {}", e),
+                        },
+                    }
+                } else {
+                    ControlResult::Error {
+                        message: format!("Device {} not found", device_id),
+                    }
                 }
             }
             ControlCommand::ListDevices => {

@@ -17,6 +17,11 @@ pub(crate) struct ClientInner {
 }
 impl ClientInner {
     pub(crate) fn get_base_path(&self) -> String {
+        // Prefer env var if set
+        if let Ok(base) = std::env::var("VIMPUTTI_BASE_PATH") {
+            return base;
+        }
+
         // Manager creates base_path as socket_path.parent()/vimputti
         // So for socket /tmp/vimputti-0, base is /tmp/vimputti
         let socket_path = Path::new(&self.socket_path);

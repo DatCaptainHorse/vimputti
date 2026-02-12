@@ -20,21 +20,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Send some test inputs
     println!("Pressing A button...");
-    device.button_press(Button::A);
+    device.button_press(Button::A).await?;
     sleep(Duration::from_millis(100)).await;
-    device.button_release(Button::A);
+    device.button_release(Button::A).await?;
 
     println!("Moving left stick...");
-    device.axis(Axis::LeftStickX, 16384);
-    device.axis(Axis::LeftStickY, -16384);
+    device.axis(Axis::LeftStickX, 16384).await?;
+    device.axis(Axis::LeftStickY, -16384).await?;
     sleep(Duration::from_millis(100)).await;
 
     // Reset to center
-    device.axis(Axis::LeftStickX, 0);
-    device.axis(Axis::LeftStickY, 0);
-
-    // Manually flush to ensure events are sent
-    device.flush().await?;
+    device.axis(Axis::LeftStickX, 0).await?;
+    device.axis(Axis::LeftStickY, 0).await?;
 
     println!("Test complete!");
 

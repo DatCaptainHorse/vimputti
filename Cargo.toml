@@ -3,7 +3,7 @@ members = ["vimputti-manager", "vimputti-shim"]
 resolver = "2"
 
 [workspace.dependencies]
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
@@ -14,7 +14,7 @@ anyhow = "1.0"
 
 [package]
 name = "vimputti"
-version = "0.1.8"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Linux input system pretender for isolated containers"
@@ -46,6 +46,10 @@ path = "examples/controller_templates.rs"
 [[example]]
 name = "create_test_device"
 path = "examples/create_test_device.rs"
+
+[[example]]
+name = "rumble_feedback"
+path = "examples/rumble_feedback.rs"
 
 [lib]
 name = "vimputti"

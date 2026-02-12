@@ -40,6 +40,8 @@ pub enum ControlCommand {
         device_id: DeviceId,
         events: Vec<InputEvent>,
     },
+    /// Poll for force feedback events from a device
+    PollFeedback { device_id: DeviceId },
     /// Query all active devices
     ListDevices,
     /// Ping to check if manager is alive
@@ -58,6 +60,8 @@ pub enum ControlResult {
     DeviceDestroyed,
     /// Input events successfully sent
     InputSent,
+    /// Feedback event polled (None if no feedback available)
+    FeedbackPolled { event: Option<FeedbackEvent> },
     /// List of active devices
     DeviceList(Vec<DeviceInfo>),
     /// Pong response

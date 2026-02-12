@@ -1,392 +1,306 @@
-use crate::manager::sysfs::SysfsGenerator;
 use crate::protocol::*;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, trace};
+use crate::uinput::*;
+use anyhow::{Context, Result, anyhow};
+use std::ffi::{CStr, CString};
+use std::fs::OpenOptions;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::PathBuf;
+use tracing::{debug, info, warn};
 
 pub struct VirtualDevice {
     pub id: DeviceId,
     pub config: DeviceConfig,
-    pub event_node: String,            // e.g., "event0"
-    pub joystick_node: Option<String>, // e.g., "js0"
-    socket_path: PathBuf,
-    joystick_socket_path: Option<PathBuf>,
-    base_path: PathBuf,
-    clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
-    joystick_clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
-    feedback_clients: Arc<Mutex<Vec<UnixStream>>>,
-    feedback_socket_path: Option<PathBuf>,
+    pub event_node: String,
+    pub joystick_node: Option<String>,
+    uinput_fd: OwnedFd,
 }
+
 impl VirtualDevice {
-    /// Create a new virtual device
-    pub async fn create(
-        id: DeviceId,
-        config: DeviceConfig,
-        base_path: &Path,
-    ) -> anyhow::Result<Self> {
-        let event_node = format!("event{}", id);
-        let socket_path = base_path.join("devices").join(&event_node);
+    /// Create a new virtual device using real uinput
+    pub fn create(id: DeviceId, config: DeviceConfig) -> Result<Self> {
+        info!(
+            "Creating virtual device {} with config: {:?}",
+            id, config.name
+        );
 
-        // Remove old socket if exists
-        let _ = std::fs::remove_file(&socket_path);
+        // Step 1: Open real /dev/uinput
+        let uinput_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/uinput")
+            .context("Failed to open /dev/uinput - is uinput kernel module loaded?")?;
 
-        // Create device socket
-        let listener = UnixListener::bind(&socket_path)?;
+        let uinput_fd: OwnedFd = uinput_file.into();
+        let raw_fd = uinput_fd.as_raw_fd();
 
-        // Create sysfs entries using new generator
-        SysfsGenerator::create_device_files(id, &config, base_path)?;
+        debug!("Opened /dev/uinput, fd={}", raw_fd);
 
-        let clients = Arc::new(Mutex::new(Vec::new()));
-        let feedback_clients = Arc::new(Mutex::new(Vec::new()));
+        // Step 2: Configure uinput device via ioctl
+        unsafe {
+            // Set event types
+            ioctl(raw_fd, UI_SET_EVBIT, EV_SYN as u64);
+            ioctl(raw_fd, UI_SET_EVBIT, EV_KEY as u64);
+            ioctl(raw_fd, UI_SET_EVBIT, EV_ABS as u64);
+            ioctl(raw_fd, UI_SET_EVBIT, EV_FF as u64);
 
-        // Start accepting client connections
-        let clients_clone = clients.clone();
-        let feedback_clients_clone = feedback_clients.clone();
-        let config_clone = config.clone();
-        let event_node_clone = event_node.clone();
-        tokio::spawn(async move {
-            Self::accept_clients(
-                id,
-                listener,
-                clients_clone,
-                feedback_clients_clone,
-                config_clone,
-                event_node_clone,
-            )
-            .await;
-        });
+            debug!("Set event types");
 
-        // Create feedback socket
-        let feedback_socket_path = base_path
-            .join("devices")
-            .join(format!("{}.feedback", &event_node));
-        let _ = std::fs::remove_file(&feedback_socket_path);
+            // Set buttons
+            for button in &config.buttons {
+                let code = button.to_ev_code();
+                ioctl(raw_fd, UI_SET_KEYBIT, code as u64);
+            }
+            debug!("Set {} buttons", config.buttons.len());
 
-        let feedback_listener = UnixListener::bind(&feedback_socket_path)?;
-        let feedback_clients_clone = Arc::clone(&feedback_clients);
-        tokio::spawn(async move {
-            loop {
-                if let Ok((stream, _)) = feedback_listener.accept().await {
-                    debug!("Client connected to feedback socket");
-                    feedback_clients_clone.lock().await.push(stream);
+            // Set axes with parameters
+            for axis_config in &config.axes {
+                let code = axis_config.axis.to_ev_code();
+                ioctl(raw_fd, UI_SET_ABSBIT, code as u64);
+
+                // Configure axis parameters
+                let abs_setup = uinput_abs_setup {
+                    code,
+                    absinfo: input_absinfo {
+                        value: 0,
+                        minimum: axis_config.min,
+                        maximum: axis_config.max,
+                        fuzz: axis_config.fuzz,
+                        flat: axis_config.flat,
+                        resolution: 0,
+                    },
+                };
+
+                if ioctl(raw_fd, UI_ABS_SETUP, &abs_setup as *const _ as u64) < 0 {
+                    warn!("Failed to setup axis {}", code);
                 }
             }
-        });
+            debug!("Set {} axes", config.axes.len());
 
-        // Create joystick interface if device has axes or buttons
-        let (joystick_node, joystick_socket_path, joystick_clients) =
-            if !config.buttons.is_empty() || !config.axes.is_empty() {
-                let js_node = format!("js{}", id);
-                let js_socket_path = base_path.join("devices").join(&js_node);
+            // Set rumble capability
+            ioctl(raw_fd, UI_SET_FFBIT, FF_RUMBLE as u64);
+            debug!("Set rumble support");
 
-                // Remove old socket if exists
-                let _ = std::fs::remove_file(&js_socket_path);
-
-                // Create joystick socket
-                let js_listener = UnixListener::bind(&js_socket_path)?;
-
-                let js_clients = Arc::new(Mutex::new(Vec::new()));
-                let js_clients_clone = js_clients.clone();
-                let config_clone = config.clone();
-
-                tokio::spawn(async move {
-                    Self::accept_joystick_clients(id, js_listener, js_clients_clone, config_clone)
-                        .await;
-                });
-
-                info!("Created joystick node: {}", js_node);
-
-                (Some(js_node), Some(js_socket_path), js_clients)
-            } else {
-                (None, None, Arc::new(Mutex::new(Vec::new())))
+            // Set device info
+            let mut setup = uinput_setup {
+                id: input_id {
+                    bustype: config.bustype as u16,
+                    vendor: config.vendor_id,
+                    product: config.product_id,
+                    version: config.version,
+                },
+                name: [0; 80],
+                ff_effects_max: 1, // Support 1 rumble effect at a time
             };
+
+            let name_bytes = config.name.as_bytes();
+            let copy_len = name_bytes.len().min(79);
+            setup.name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+            if ioctl(raw_fd, UI_DEV_SETUP, &setup as *const _ as u64) < 0 {
+                return Err(anyhow!(
+                    "UI_DEV_SETUP failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            debug!("Device setup complete");
+
+            // Step 3: Create the device
+            if ioctl(raw_fd, UI_DEV_CREATE, 0) < 0 {
+                return Err(anyhow!(
+                    "UI_DEV_CREATE failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            info!("Created uinput device");
+        }
+
+        // Step 4: Get sysfs name from kernel
+        let mut sysname_buf = [0u8; 80];
+        unsafe {
+            let ioctl_code = ui_get_sysname(sysname_buf.len());
+            if ioctl(raw_fd, ioctl_code, sysname_buf.as_mut_ptr() as u64) < 0 {
+                return Err(anyhow!(
+                    "UI_GET_SYSNAME failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+
+        let sysname = CStr::from_bytes_until_nul(&sysname_buf)
+            .context("Invalid sysname from kernel")?
+            .to_str()
+            .context("Non-UTF8 sysname")?;
+
+        info!("Kernel assigned sysfs name: {}", sysname);
+
+        // Step 5: Discover event/js nodes from sysfs
+        let sysfs_device = PathBuf::from("/sys/devices/virtual/input").join(sysname);
+
+        // Give kernel a moment to create sysfs entries
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let mut event_node = None;
+        let mut joystick_node = None;
+
+        for entry in std::fs::read_dir(&sysfs_device).context(format!(
+            "Failed to read sysfs dir: {}",
+            sysfs_device.display()
+        ))? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            if name.starts_with("event") {
+                event_node = Some(name.clone());
+
+                // Read dev file to get major:minor
+                let dev_file = entry.path().join("dev");
+                let dev_str = std::fs::read_to_string(&dev_file)
+                    .context(format!("Failed to read {}", dev_file.display()))?;
+                let (major, minor) = parse_dev_string(&dev_str)?;
+
+                create_device_node(&name, major, minor)?;
+                info!("Created /dev/input/{} ({}:{})", name, major, minor);
+            } else if name.starts_with("js") {
+                joystick_node = Some(name.clone());
+
+                let dev_file = entry.path().join("dev");
+                let dev_str = std::fs::read_to_string(&dev_file)
+                    .context(format!("Failed to read {}", dev_file.display()))?;
+                let (major, minor) = parse_dev_string(&dev_str)?;
+
+                create_device_node(&name, major, minor)?;
+                info!("Created /dev/input/{} ({}:{})", name, major, minor);
+            }
+        }
+
+        let event_node = event_node.ok_or_else(|| anyhow!("No event node found in sysfs"))?;
 
         Ok(Self {
             id,
             config,
             event_node,
             joystick_node,
-            socket_path,
-            joystick_socket_path,
-            base_path: base_path.to_path_buf(),
-            clients,
-            joystick_clients,
-            feedback_clients,
-            feedback_socket_path: Some(feedback_socket_path),
+            uinput_fd,
         })
     }
 
-    /// Accept client connections to device socket
-    async fn accept_clients(
-        id: DeviceId,
-        listener: UnixListener,
-        clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
-        feedback_clients: Arc<Mutex<Vec<UnixStream>>>,
-        config: DeviceConfig,
-        event_node: String,
-    ) {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    debug!(
-                        "Client connected to device socket: {} ({})",
-                        event_node, config.name
-                    );
-
-                    let (mut read_half, mut write_half) = stream.into_split();
-
-                    // Send handshake
-                    let handshake = DeviceHandshake {
-                        device_id: id,
-                        config: config.clone(),
-                    };
-                    match serde_json::to_vec(&handshake) {
-                        Ok(config_json) => {
-                            let len = config_json.len() as u32;
-                            if let Err(e) = write_half.write_all(&len.to_le_bytes()).await {
-                                error!("Failed to send config length to client: {}", e);
-                                continue;
-                            }
-                            if let Err(e) = write_half.write_all(&config_json).await {
-                                error!("Failed to send config to client: {}", e);
-                                continue;
-                            }
-                            debug!("Sent device config to client ({} bytes)", config_json.len());
-                        }
-                        Err(e) => {
-                            error!("Failed to serialize device config: {}", e);
-                            continue;
-                        }
-                    }
-
-                    clients.lock().await.push(write_half);
-
-                    // Spawn reader for feedback events
-                    let feedback_clients = feedback_clients.clone();
-                    tokio::spawn(async move {
-                        let mut buf = [0u8; 24];
-                        while read_half.read_exact(&mut buf).await.is_ok() {
-                            let event: LinuxInputEvent =
-                                unsafe { std::ptr::read(buf.as_ptr() as *const _) };
-
-                            if event.event_type == EV_FF {
-                                debug!(
-                                    "Received feedback event: type={}, code={}, value={}",
-                                    event.event_type, event.code, event.value
-                                );
-                                let mut clients = feedback_clients.lock().await;
-                                debug!("Writing to {} feedback clients", clients.len());
-                                let mut disconnected = Vec::new();
-
-                                for (idx, client) in clients.iter_mut().enumerate() {
-                                    if let Err(e) = client.write_all(&buf).await {
-                                        trace!("Failed to write to feedback client {}: {}", idx, e);
-                                        disconnected.push(idx);
-                                    } else {
-                                        debug!("Wrote feedback to client {}", idx);
-                                    }
-                                }
-
-                                // Remove disconnected clients in reverse order
-                                for idx in disconnected.iter().rev() {
-                                    clients.remove(*idx);
-                                }
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("Error accepting client: {}", e);
-                    break;
-                }
-            }
-        }
-    }
-
-    async fn accept_joystick_clients(
-        id: DeviceId,
-        listener: UnixListener,
-        clients: Arc<Mutex<Vec<tokio::net::unix::OwnedWriteHalf>>>,
-        config: DeviceConfig,
-    ) {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    info!("Client connected to joystick socket");
-
-                    let (_, mut write_half) = stream.into_split();
-
-                    // Send handshake
-                    let handshake = DeviceHandshake {
-                        device_id: id,
-                        config: config.clone(),
-                    };
-                    match serde_json::to_vec(&handshake) {
-                        Ok(config_json) => {
-                            let len = config_json.len() as u32;
-                            if write_half.write_all(&len.to_le_bytes()).await.is_err()
-                                || write_half.write_all(&config_json).await.is_err()
-                            {
-                                continue;
-                            }
-                        }
-                        Err(_) => continue,
-                    }
-
-                    clients.lock().await.push(write_half);
-                }
-                Err(e) => {
-                    error!("Error accepting joystick client: {}", e);
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Send input events to all connected clients (both evdev and joystick)
-    pub async fn send_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
-        // Send to evdev clients
-        self.send_evdev_events(events).await?;
-
-        // Send to joystick clients
-        self.send_joystick_events(events).await?;
-
-        Ok(())
-    }
-
-    /// Send evdev events
-    async fn send_evdev_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
+    /// Send input events to kernel uinput device
+    pub fn send_events(&self, events: &[InputEvent]) -> Result<()> {
         let linux_events: Vec<LinuxInputEvent> =
             events.iter().map(|e| e.to_linux_input_event()).collect();
 
-        // Convert to bytes
-        let mut data = Vec::new();
+        let raw_fd = self.uinput_fd.as_raw_fd();
+
+        // Write events directly to kernel
         for event in &linux_events {
-            data.extend_from_slice(&event.to_bytes());
-        }
+            let bytes = event.to_bytes();
+            let written = unsafe { libc::write(raw_fd, bytes.as_ptr() as *const _, bytes.len()) };
 
-        // Send to all connected evdev clients
-        let mut clients = self.clients.lock().await;
-        let mut disconnected = Vec::new();
-
-        for (idx, client) in clients.iter_mut().enumerate() {
-            match client.write_all(&data).await {
-                Ok(()) => {
-                    // Success
-                }
-                Err(e) => {
-                    trace!("Failed to write to evdev client {}: {}", idx, e);
-                    disconnected.push(idx);
-                }
+            if written < 0 {
+                return Err(anyhow!(
+                    "Failed to write event: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
-        }
-
-        // Remove disconnected/slow clients (in reverse order)
-        for idx in disconnected.iter().rev() {
-            clients.remove(*idx);
         }
 
         Ok(())
     }
 
-    /// Send joystick events
-    async fn send_joystick_events(&self, events: &[InputEvent]) -> anyhow::Result<()> {
-        if self.joystick_node.is_none() {
-            return Ok(());
+    /// Read force feedback events from uinput (blocking)
+    pub fn read_feedback_event(&self) -> Result<FeedbackEvent> {
+        let mut event_buf = [0u8; 24]; // sizeof(input_event)
+        let raw_fd = self.uinput_fd.as_raw_fd();
+
+        let read_bytes =
+            unsafe { libc::read(raw_fd, event_buf.as_mut_ptr() as *mut _, event_buf.len()) };
+
+        if read_bytes != 24 {
+            return Err(anyhow!("Failed to read full event"));
         }
 
-        const JS_EVENT_BUTTON: u8 = 0x01;
-        const JS_EVENT_AXIS: u8 = 0x02;
+        let event: LinuxInputEvent = unsafe { std::ptr::read(event_buf.as_ptr() as *const _) };
 
-        let mut js_events = Vec::new();
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis() as u32;
+        // Parse force feedback event
+        if event.event_type == EV_FF {
+            match event.code {
+                FF_RUMBLE => {
+                    if event.value == 0 {
+                        Ok(FeedbackEvent::RumbleStop)
+                    } else {
+                        // Rumble magnitude encoded in value
+                        let strong = (event.value >> 16) as u16;
+                        let weak = (event.value & 0xFFFF) as u16;
 
-        for event in events {
-            match event {
-                InputEvent::Button { button, pressed } => {
-                    // Find button index in config
-                    if let Some(button_idx) = self.config.buttons.iter().position(|b| b == button) {
-                        js_events.push(LinuxJsEvent {
-                            time,
-                            value: if *pressed { 1 } else { 0 },
-                            type_: JS_EVENT_BUTTON,
-                            number: button_idx as u8,
-                        });
+                        Ok(FeedbackEvent::Rumble {
+                            strong_magnitude: strong,
+                            weak_magnitude: weak,
+                            duration_ms: 0, // TODO: parse duration from effect
+                        })
                     }
                 }
-                InputEvent::Axis { axis, value } => {
-                    if let Some(axis_idx) = self.config.axes.iter().position(|a| a.axis == *axis) {
-                        // Clamp the i32 value to i16 range BEFORE casting
-                        let clamped_value = value.clamp(&(i16::MIN as i32), &(i16::MAX as i32));
-                        let normalized_value = *clamped_value as i16;
-                        js_events.push(LinuxJsEvent {
-                            time,
-                            value: normalized_value,
-                            type_: JS_EVENT_AXIS,
-                            number: axis_idx as u8,
-                        });
-                    }
-                }
-                _ => {} // Ignore raw events and sync for joystick
+                _ => Ok(FeedbackEvent::Raw {
+                    code: event.code,
+                    value: event.value,
+                }),
             }
+        } else {
+            Err(anyhow!("Not a force feedback event"))
         }
-
-        // Convert to bytes - manually serialize to ensure correct layout
-        let mut data = Vec::with_capacity(js_events.len() * 8);
-        for event in &js_events {
-            data.extend_from_slice(&event.time.to_ne_bytes());
-            data.extend_from_slice(&event.value.to_ne_bytes());
-            data.push(event.type_);
-            data.push(event.number);
-        }
-
-        // Send to all connected joystick clients
-        let mut clients = self.joystick_clients.lock().await;
-        let mut disconnected = Vec::new();
-
-        for (idx, client) in clients.iter_mut().enumerate() {
-            match client.write_all(&data).await {
-                Ok(()) => {
-                    // Success
-                }
-                Err(e) => {
-                    trace!("Failed to write to joystick client {}: {}", idx, e);
-                    disconnected.push(idx);
-                }
-            }
-        }
-
-        for idx in disconnected.iter().rev() {
-            clients.remove(*idx);
-        }
-
-        Ok(())
     }
 }
+
 impl Drop for VirtualDevice {
     fn drop(&mut self) {
-        // Clean up socket file
-        let _ = std::fs::remove_file(&self.socket_path);
+        let raw_fd = self.uinput_fd.as_raw_fd();
 
-        // Clean up joystick socket
-        if let Some(js_socket) = &self.joystick_socket_path {
-            let _ = std::fs::remove_file(js_socket);
+        // Destroy uinput device
+        unsafe {
+            ioctl(raw_fd, UI_DEV_DESTROY, 0);
         }
 
-        // Clean up feedback socket
-        if let Some(feedback_socket) = &self.feedback_socket_path {
-            let _ = std::fs::remove_file(feedback_socket);
+        // Remove device nodes
+        let _ = std::fs::remove_file(PathBuf::from("/dev/input").join(&self.event_node));
+        if let Some(js_node) = &self.joystick_node {
+            let _ = std::fs::remove_file(PathBuf::from("/dev/input").join(js_node));
         }
 
-        // Clean up sysfs files
-        let _ = SysfsGenerator::remove_device_files(self.id, &self.base_path);
-
-        info!("Device {} cleaned up", self.event_node);
+        info!("Device {} destroyed and cleaned up", self.event_node);
     }
+}
+
+// Helper functions
+
+fn parse_dev_string(s: &str) -> Result<(u32, u32)> {
+    let parts: Vec<&str> = s.trim().split(':').collect();
+    if parts.len() != 2 {
+        return Err(anyhow!("Invalid dev string format: {}", s));
+    }
+    Ok((parts[0].parse()?, parts[1].parse()?))
+}
+
+fn create_device_node(name: &str, major: u32, minor: u32) -> Result<()> {
+    let path = PathBuf::from("/dev/input").join(name);
+
+    // Create /dev/input if it doesn't exist
+    std::fs::create_dir_all("/dev/input")?;
+
+    // Remove old node if exists
+    let _ = std::fs::remove_file(&path);
+
+    // Create character device node
+    let path_cstr = CString::new(path.to_str().unwrap())?;
+    let dev = libc::makedev(major, minor);
+
+    let result = unsafe { libc::mknod(path_cstr.as_ptr(), libc::S_IFCHR | 0o666, dev) };
+
+    if result != 0 {
+        return Err(anyhow!("mknod failed: {}", std::io::Error::last_os_error()));
+    }
+
+    Ok(())
+}
+
+unsafe fn ioctl(fd: i32, request: u64, arg: u64) -> i32 {
+    unsafe { libc::ioctl(fd, request as libc::c_ulong, arg) }
 }

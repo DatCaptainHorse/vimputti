@@ -12,9 +12,8 @@ async fn main() -> anyhow::Result<()> {
     let xbox = client.create_device(ControllerTemplates::xbox360()).await?;
     println!("Created: {}", xbox.event_node());
 
-    xbox.button_press(Button::A);
-    xbox.axis(Axis::LeftStickX, 16384);
-    xbox.flush().await?;
+    xbox.button_press(Button::A).await?;
+    xbox.axis(Axis::LeftStickX, 16384).await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(xbox);
@@ -27,9 +26,8 @@ async fn main() -> anyhow::Result<()> {
     let ps5 = client.create_device(ControllerTemplates::ps5()).await?;
     println!("Created: {}", ps5.event_node());
 
-    ps5.button_press(Button::X);
-    ps5.axis(Axis::RightStickY, 128);
-    ps5.flush().await?;
+    ps5.button_press(Button::X).await?;
+    ps5.axis(Axis::RightStickY, 128).await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(ps5);
@@ -44,9 +42,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("Created: {}", switch.event_node());
 
-    switch.button_press(Button::B); // A button on Nintendo layout
-    switch.axis(Axis::LeftStickX, -10000);
-    switch.flush().await?;
+    switch.button_press(Button::B).await?; // A button on Nintendo layout
+    switch.axis(Axis::LeftStickX, -10000).await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(switch);
@@ -70,9 +67,8 @@ async fn main() -> anyhow::Result<()> {
     let custom = client.create_device(custom_config).await?;
     println!("Created: {}", custom.event_node());
 
-    custom.button_press(Button::Start);
-    custom.axis(Axis::RightStickX, 20000);
-    custom.flush().await?;
+    custom.button_press(Button::Start).await?;
+    custom.axis(Axis::RightStickX, 20000).await?;
 
     sleep(Duration::from_secs(1)).await;
     drop(custom);
