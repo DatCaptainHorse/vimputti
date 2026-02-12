@@ -36,8 +36,6 @@ fn init_shim() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-
-    tracing::info!("Vimputti shim loaded (minimal mode - real device nodes)");
 }
 
 // uinput ioctl constants
