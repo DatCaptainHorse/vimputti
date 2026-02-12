@@ -43,7 +43,7 @@ fn init_shim() {
 // uinput ioctl constants
 const UI_DEV_CREATE: c_long = 0x5501;
 const UI_DEV_DESTROY: c_long = 0x5502;
-const UI_GET_SYSNAME: c_long = 0x8000552c; // _IOR('U', 44, 80)
+const UI_GET_SYSNAME: c_long = 0x8000552c_u32 as c_long; // _IOR('U', 44, 80)
 
 /// Intercept ioctl() - only for logging/tracking uinput device creation
 #[unsafe(no_mangle)]
