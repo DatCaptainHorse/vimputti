@@ -371,15 +371,10 @@ pub unsafe extern "C" fn udev_monitor_receive_device(udev_monitor: *mut c_void) 
                     return ptr::null_mut();
                 }
                 Ok(n) => {
-                    let message = String::from_utf8_lossy(&buffer[..n]);
-                    debug!(
-                        "[UDEV] Received {} bytes: {}",
-                        n,
-                        message.lines().next().unwrap_or("")
-                    );
+                    debug!("[UDEV] Received {} bytes from monitor socket", n);
 
-                    // Parse the message
-                    let device = parse_udev_message(&message);
+                    // Parse the binary message
+                    let device = parse_udev_message_bytes(&buffer[..n]);
 
                     if let Some(device) = device {
                         let device_ptr = next_ptr();
@@ -475,6 +470,16 @@ pub unsafe extern "C" fn udev_enumerate_unref(udev_enumerate: *mut c_void) -> *m
 /// Intercept udev_device_get_syspath()
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn udev_device_get_syspath(udev_device: *mut c_void) -> *const c_char {
+    let device_ptr = udev_device as usize;
+
+    let devices = FAKE_UDEV_DEVICES.lock().unwrap();
+    if let Some(device) = devices.get(&device_ptr) {
+        debug!(
+            "[UDEV] udev_device_get_syspath: returning {}",
+            device.syspath
+        );
+        return cache_cstring(device.syspath.clone());
+    }
     ptr::null()
 }
 
@@ -692,29 +697,65 @@ pub unsafe extern "C" fn udev_device_get_property_value(
     ptr::null()
 }
 
-/// Parse a udev netlink-style message into a FakeUdevDevice
-fn parse_udev_message(message: &str) -> Option<FakeUdevDevice> {
+/// Size of the libudev monitor netlink header
+const MONITOR_HEADER_SIZE: usize = 40;
+
+/// Parse a binary libudev monitor message into a FakeUdevDevice
+/// The message format is: [MonitorNetlinkHeader (40 bytes)] [null-separated KEY=VALUE properties]
+fn parse_udev_message_bytes(raw: &[u8]) -> Option<FakeUdevDevice> {
+    // Validate minimum size and header magic
+    if raw.len() < MONITOR_HEADER_SIZE {
+        debug!("[UDEV] Message too short: {} bytes", raw.len());
+        return None;
+    }
+
+    // Check for "libudev\0" prefix
+    if &raw[..8] != b"libudev\0" {
+        debug!("[UDEV] Missing libudev prefix, falling back to text parse");
+        // Fallback: try as plain text (for any legacy plain-text messages)
+        return parse_udev_message_text(std::str::from_utf8(raw).ok()?);
+    }
+
+    // Read properties_off and properties_len from header (little-endian u32 at offsets 16 and 20)
+    let properties_off = u32::from_ne_bytes(raw[16..20].try_into().ok()?) as usize;
+    let properties_len = u32::from_ne_bytes(raw[20..24].try_into().ok()?) as usize;
+
+    if properties_off + properties_len > raw.len() {
+        debug!(
+            "[UDEV] Properties out of bounds: off={} len={} total={}",
+            properties_off,
+            properties_len,
+            raw.len()
+        );
+        return None;
+    }
+
+    let props_bytes = &raw[properties_off..properties_off + properties_len];
+
     let mut properties = HashMap::new();
     let mut devname = String::new();
     let mut devpath = String::new();
     let mut subsystem = String::new();
     let mut syspath = String::new();
 
-    for line in message.lines() {
-        if line.is_empty() {
-            break; // Empty line terminates message
+    // Properties are null-separated KEY=VALUE pairs
+    for entry in props_bytes.split(|&b| b == 0) {
+        if entry.is_empty() {
+            continue;
         }
 
-        if let Some((key, value)) = line.split_once('=') {
-            match key {
-                "DEVNAME" => devname = value.to_string(),
-                "DEVPATH" => devpath = value.to_string(),
-                "SUBSYSTEM" => subsystem = value.to_string(),
-                "ACTION" => {
-                    debug!("[UDEV] Device action: {}", value);
-                }
-                _ => {
-                    properties.insert(key.to_string(), value.to_string());
+        if let Ok(entry_str) = std::str::from_utf8(entry) {
+            if let Some((key, value)) = entry_str.split_once('=') {
+                match key {
+                    "DEVNAME" => devname = value.to_string(),
+                    "DEVPATH" => devpath = value.to_string(),
+                    "SUBSYSTEM" => subsystem = value.to_string(),
+                    "ACTION" => {
+                        debug!("[UDEV] Device action: {}", value);
+                    }
+                    _ => {
+                        properties.insert(key.to_string(), value.to_string());
+                    }
                 }
             }
         }
@@ -733,6 +774,57 @@ fn parse_udev_message(message: &str) -> Option<FakeUdevDevice> {
 
     debug!(
         "[UDEV] Parsed device: devname={}, subsystem={}",
+        devname, subsystem
+    );
+
+    Some(FakeUdevDevice {
+        syspath,
+        devnode: devname,
+        subsystem,
+        properties,
+    })
+}
+
+/// Fallback: parse a plain-text udev message (newline-separated KEY=VALUE)
+fn parse_udev_message_text(message: &str) -> Option<FakeUdevDevice> {
+    let mut properties = HashMap::new();
+    let mut devname = String::new();
+    let mut devpath = String::new();
+    let mut subsystem = String::new();
+    let mut syspath = String::new();
+
+    for line in message.lines() {
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((key, value)) = line.split_once('=') {
+            match key {
+                "DEVNAME" => devname = value.to_string(),
+                "DEVPATH" => devpath = value.to_string(),
+                "SUBSYSTEM" => subsystem = value.to_string(),
+                "ACTION" => {
+                    debug!("[UDEV] Device action: {}", value);
+                }
+                _ => {
+                    properties.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+
+    if devname.is_empty() {
+        debug!("[UDEV] No DEVNAME in text message");
+        return None;
+    }
+
+    if syspath.is_empty() && !devpath.is_empty() {
+        let base_path = crate::syscalls::get_base_path();
+        syspath = format!("{}/sysfs{}", base_path, devpath);
+    }
+
+    debug!(
+        "[UDEV] Parsed text device: devname={}, subsystem={}",
         devname, subsystem
     );
 

@@ -860,7 +860,7 @@ pub unsafe fn handle_virtual_device_write(
 
 /// Clean up when a virtual device FD is closed
 pub fn close_virtual_device(fd: RawFd) {
-    //VIRTUAL_DEVICE_FDS.lock().remove(&fd);
+    VIRTUAL_DEVICE_FDS.lock().remove(&fd);
     UINPUT_FDS.lock().remove(&fd);
     UDEV_MONITOR_FDS.lock().remove(&fd);
     UNIX_SOCKET_FDS.lock().remove(&fd);
